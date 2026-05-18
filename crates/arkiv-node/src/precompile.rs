@@ -70,10 +70,17 @@ const G_CREATE: u64 = 80_000;
 const G_UPDATE: u64 = 30_000;
 const G_EXTEND: u64 = 25_000;
 const G_TRANSFER: u64 = 25_000;
-const G_DELETE: u64 = 50_000;
-const G_EXPIRE: u64 = 50_000;
+// DELETE / EXPIRE: base covers Tier-1 bitmap removes (same as before)
+// plus a flat allowance for worst-case Tier-2 index removes (max 32
+// UINT/STRING attrs × G_ART_INDEXED_ANNOTATION / 3 average).
+const G_DELETE: u64 = 62_000;
+const G_EXPIRE: u64 = 62_000;
 const G_BYTE: u64 = 16;
 const G_ANNOTATION: u64 = 5_000;
+// Tier-2 index account read + conditional write per UINT / STRING
+// attribute; charged conservatively (always) so the gas formula stays
+// a pure function of calldata.
+const G_ART_INDEXED_ANNOTATION: u64 = 6_000;
 
 const PRECOMPILE_NAME: &str = "ARKIV";
 
@@ -217,10 +224,18 @@ fn record_gas(rec: &OpRecord) -> u64 {
     // Each annotation's name (≤32 bytes) + value (≤128 bytes) lands in
     // both the entity RLP and a pair-account bitmap.
     let annotation_bytes = annotation_count.saturating_mul(32 + 128);
+    // UINT and STRING attributes also update the Tier-2 index account.
+    // ENTITY_KEY attributes are excluded from index maintenance.
+    let indexed_count = rec
+        .attributes
+        .iter()
+        .filter(|a| a.valueType == ATTR_UINT || a.valueType == ATTR_STRING)
+        .count() as u64;
 
     base.saturating_add(payload_bytes.saturating_mul(G_BYTE))
         .saturating_add(annotation_bytes.saturating_mul(G_BYTE))
         .saturating_add(annotation_count.saturating_mul(G_ANNOTATION))
+        .saturating_add(indexed_count.saturating_mul(G_ART_INDEXED_ANNOTATION))
 }
 
 /// Concatenate a `bytes32[4]` into 128 bytes, then strip trailing

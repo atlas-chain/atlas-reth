@@ -1,6 +1,6 @@
 //! Recursive-descent parser for the Arkiv query language.
 //!
-//! Grammar (Phase 10a):
+//! Grammar:
 //!
 //! ```text
 //! TopLevel  → '*' | '$all' | Or
@@ -12,6 +12,12 @@
 //! Predicate → Var '=' Value
 //!           | Var '!=' Value
 //!           | Var ('NOT')? 'IN' '(' Value+ ')'
+//!           | Var '>'  Value
+//!           | Var '>=' Value
+//!           | Var '<'  Value
+//!           | Var '<=' Value
+//!           | Var '~'  StringLit    (pattern must end with '*')
+//!           | Var '!~' StringLit
 //! Var       → Ident | '$owner' | '$creator' | '$key'
 //!           | '$expiration' | '$contentType' | '$createdAtBlock'
 //! Value     → Number | String | Address | EntityKey
@@ -40,6 +46,20 @@ pub enum Query {
     In { key: AnnotKey, values: Vec<AnnotVal> },
     /// Leaf negated inclusion: `key NOT IN (...)`. `values` is non-empty.
     NotIn { key: AnnotKey, values: Vec<AnnotVal> },
+    /// Leaf range: `key > value`.
+    Gt { key: AnnotKey, value: AnnotVal },
+    /// Leaf range: `key >= value`.
+    Gte { key: AnnotKey, value: AnnotVal },
+    /// Leaf range: `key < value`.
+    Lt { key: AnnotKey, value: AnnotVal },
+    /// Leaf range: `key <= value`.
+    Lte { key: AnnotKey, value: AnnotVal },
+    /// Leaf glob: `key ~ "prefix*"`. `value` contains the prefix bytes
+    /// (the trailing `*` is stripped at parse time).
+    Glob { key: AnnotKey, value: AnnotVal },
+    /// Leaf negated glob: `key !~ "prefix*"`. Evaluates as
+    /// `$all \ eval(Glob { key, value })`.
+    NotGlob { key: AnnotKey, value: AnnotVal },
     /// Logical AND.
     And(Box<Query>, Box<Query>),
     /// Logical OR.
@@ -228,9 +248,68 @@ impl Parser {
                 let values = self.parse_value_list(&key)?;
                 Ok(Query::In { key, values })
             }
-            Some(t) => bail!("expected '=', '!=', 'IN', or 'NOT IN' after key; got {t:?}"),
+            Some(Token::Gt) => {
+                self.advance();
+                let value = self.parse_value(&key)?;
+                Ok(Query::Gt { key, value })
+            }
+            Some(Token::Gte) => {
+                self.advance();
+                let value = self.parse_value(&key)?;
+                Ok(Query::Gte { key, value })
+            }
+            Some(Token::Lt) => {
+                self.advance();
+                let value = self.parse_value(&key)?;
+                Ok(Query::Lt { key, value })
+            }
+            Some(Token::Lte) => {
+                self.advance();
+                let value = self.parse_value(&key)?;
+                Ok(Query::Lte { key, value })
+            }
+            Some(Token::Tilde) => {
+                self.advance();
+                let value = self.parse_glob_pattern(&key)?;
+                Ok(Query::Glob { key, value })
+            }
+            Some(Token::NotTilde) => {
+                self.advance();
+                let value = self.parse_glob_pattern(&key)?;
+                Ok(Query::NotGlob { key, value })
+            }
+            Some(t) => bail!(
+                "expected '=', '!=', '>', '>=', '<', '<=', '~', '!~', 'IN', or 'NOT IN' after key; got {t:?}"
+            ),
             None => bail!("expected operator after key, got end of input"),
         }
+    }
+
+    /// Parse a glob pattern: a string literal that must end with `*`.
+    /// Strips the trailing `*` and returns the prefix bytes in an
+    /// [`AnnotVal`]. Only `$contentType` and user-string keys support
+    /// glob.
+    fn parse_glob_pattern(&mut self, key: &AnnotKey) -> Result<AnnotVal> {
+        match key {
+            AnnotKey::BuiltIn(BuiltIn::ContentType) | AnnotKey::User(_) => {}
+            AnnotKey::BuiltIn(other) => {
+                bail!(
+                    "glob ('~' / '!~') is only supported on string-valued keys, \
+                     not on {other:?}"
+                );
+            }
+        }
+        let lit = self.parse_literal()?;
+        let Literal::String(s) = lit else {
+            bail!("glob pattern must be a string literal ending in '*'");
+        };
+        let Some(prefix) = s.strip_suffix('*') else {
+            bail!("glob pattern must end in '*', got {s:?}");
+        };
+        if prefix.contains('*') {
+            bail!("only a single trailing '*' is supported in glob patterns, got {s:?}");
+        }
+        Ok(AnnotVal(prefix.as_bytes().to_vec()))
     }
 
     fn parse_annot_key(&mut self) -> Result<AnnotKey> {

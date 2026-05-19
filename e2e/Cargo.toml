@@ -48,3 +48,10 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 eyre.workspace = true
+
+# Used by tests/profile_workload.rs to emit a chrome-trace JSON of all
+# arkiv spans (entitydb ops + precompile + query) for inspection in
+# https://ui.perfetto.dev.
+tracing.workspace = true
+tracing-chrome = "0.7"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

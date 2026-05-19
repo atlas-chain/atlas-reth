@@ -80,6 +80,8 @@ const PRECOMPILE_NAME: &str = "ARKIV";
 pub fn arkiv_precompile() -> DynPrecompile {
     let id = PrecompileId::custom(PRECOMPILE_NAME);
     let call = move |mut input: PrecompileInput<'_>| -> PrecompileResult {
+        let _call_span = tracing::debug_span!("precompile_call").entered();
+
         // Direct CALL only, from the EntityRegistry predeploy.
         if input.target_address != input.bytecode_address {
             return Err(PrecompileError::Fatal(
@@ -103,12 +105,15 @@ pub fn arkiv_precompile() -> DynPrecompile {
             )));
         }
 
-        let records = match <Vec<OpRecord> as SolValue>::abi_decode(input.data) {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(PrecompileError::Fatal(format!(
-                    "arkiv precompile: failed to decode OpRecord[]: {e}"
-                )));
+        let records = {
+            let _decode_span = tracing::debug_span!("precompile_decode").entered();
+            match <Vec<OpRecord> as SolValue>::abi_decode(input.data) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(PrecompileError::Fatal(format!(
+                        "arkiv precompile: failed to decode OpRecord[]: {e}"
+                    )));
+                }
             }
         };
 
@@ -120,12 +125,16 @@ pub fn arkiv_precompile() -> DynPrecompile {
         let current_block: u64 = input.internals.block_number().saturating_to();
         let mut adapter = RevmStateAdapter::new(&mut input.internals);
 
-        for (i, rec) in records.into_iter().enumerate() {
-            if let Err(e) = dispatch(&mut adapter, current_block, &rec) {
-                return Err(PrecompileError::Fatal(format!(
-                    "arkiv precompile: op #{i} ({}) failed: {e}",
-                    op_name(rec.operationType),
-                )));
+        {
+            let _dispatch_span =
+                tracing::debug_span!("precompile_dispatch", n_ops = records.len()).entered();
+            for (i, rec) in records.into_iter().enumerate() {
+                if let Err(e) = dispatch(&mut adapter, current_block, &rec) {
+                    return Err(PrecompileError::Fatal(format!(
+                        "arkiv precompile: op #{i} ({}) failed: {e}",
+                        op_name(rec.operationType),
+                    )));
+                }
             }
         }
 

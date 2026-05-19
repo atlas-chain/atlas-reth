@@ -34,9 +34,15 @@ use std::sync::Arc;
 use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory,
     precompiles::PrecompilesMap,
-    revm::{Inspector, context::BlockEnv, context_interface::result::EVMError, inspector::NoOpInspector},
+    revm::{
+        Inspector,
+        context::{BlockEnv, CfgEnv, result::ResultAndState},
+        context_interface::result::EVMError,
+        inspector::NoOpInspector,
+    },
 };
 use alloy_op_evm::{OpBlockExecutorFactory, OpEvm, OpEvmContext, OpEvmFactory, OpTxError};
+use alloy_primitives::{Address, Bytes};
 use op_revm::{OpHaltReason, OpSpecId};
 
 use alloy_consensus::Header;
@@ -100,7 +106,7 @@ impl EvmFactory for ArkivOpEvmFactory {
     // here but leaves bounds like `Self::Tx: FromRecoveredTx<_>` unresolved
     // in downstream `ConfigureEvm` / `OpAddOns` impls, because the compiler
     // does not always normalise nested projections through trait bounds.
-    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = OpEvm<DB, I, PrecompilesMap, OpTx>;
+    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = ArkivOpEvm<DB, I>;
     type Context<DB: Database> = OpEvmContext<DB>;
     type Tx = OpTx;
     type Error<DBError: core::error::Error + Send + Sync + 'static> =
@@ -117,7 +123,7 @@ impl EvmFactory for ArkivOpEvmFactory {
     ) -> Self::Evm<DB, NoOpInspector> {
         let mut evm = self.inner.create_evm(db, input);
         self.install(&mut evm);
-        evm
+        ArkivOpEvm { inner: evm }
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -128,7 +134,86 @@ impl EvmFactory for ArkivOpEvmFactory {
     ) -> Self::Evm<DB, I> {
         let mut evm = self.inner.create_evm_with_inspector(db, input, inspector);
         self.install(&mut evm);
-        evm
+        ArkivOpEvm { inner: evm }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ArkivOpEvm — newtype wrapper around OpEvm that spans `transact_raw`
+// ─────────────────────────────────────────────────────────────────────
+//
+// Wraps the OP EVM produced by `OpEvmFactory` so each per-tx
+// `transact_raw` call is enclosed in an `evm_tx` tracing span. The
+// span boundary captures *only* the EVM-internal execution of a
+// transaction (Solidity bytecode + nested precompile call). Everything
+// outside — block assembly, payload building, state-root, sealing, RPC,
+// receipt polling — runs outside this span, so subtracting children
+// (e.g. `precompile_call`) from `evm_tx` yields a clean
+// contract-execution slice.
+//
+// Every `Evm` trait method that isn't `transact_raw` is a pass-through.
+
+pub struct ArkivOpEvm<DB: Database, I> {
+    inner: OpEvm<DB, I, PrecompilesMap, OpTx>,
+}
+
+impl<DB, I> Evm for ArkivOpEvm<DB, I>
+where
+    DB: Database,
+    I: Inspector<OpEvmContext<DB>>,
+{
+    type DB = DB;
+    type Tx = OpTx;
+    type Error = EVMError<DB::Error, OpTxError>;
+    type HaltReason = OpHaltReason;
+    type Spec = OpSpecId;
+    type BlockEnv = BlockEnv;
+    type Precompiles = PrecompilesMap;
+    type Inspector = I;
+
+    fn block(&self) -> &Self::BlockEnv {
+        self.inner.block()
+    }
+
+    fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
+        self.inner.cfg_env()
+    }
+
+    fn chain_id(&self) -> u64 {
+        self.inner.chain_id()
+    }
+
+    fn transact_raw(
+        &mut self,
+        tx: Self::Tx,
+    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        let _span = tracing::debug_span!("evm_tx").entered();
+        self.inner.transact_raw(tx)
+    }
+
+    fn transact_system_call(
+        &mut self,
+        caller: Address,
+        contract: Address,
+        data: Bytes,
+    ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        self.inner.transact_system_call(caller, contract, data)
+    }
+
+    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec, Self::BlockEnv>) {
+        self.inner.finish()
+    }
+
+    fn set_inspector_enabled(&mut self, enabled: bool) {
+        self.inner.set_inspector_enabled(enabled);
+    }
+
+    fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
+        self.inner.components()
+    }
+
+    fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
+        self.inner.components_mut()
     }
 }
 

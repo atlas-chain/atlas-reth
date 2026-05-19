@@ -353,6 +353,15 @@ pub trait StateAdapter {
 /// maps on the system account, populates all built-in + user bitmaps,
 /// and writes the entity RLP.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    name = "entitydb_create",
+    level = "debug",
+    skip_all,
+    fields(
+        payload_bytes = payload.len(),
+        n_attrs = string_annotations.len() + numeric_annotations.len(),
+    ),
+)]
 pub fn create<S: StateAdapter>(
     state: &mut S,
     sender: Address,
@@ -414,6 +423,15 @@ pub fn create<S: StateAdapter>(
 /// Preserves `creator`, `created_at_block`, `key`, `owner`,
 /// `expires_at`. Bitmap diff: only annotations that changed get
 /// touched (incl. `$contentType` if the content type changed).
+#[tracing::instrument(
+    name = "entitydb_update",
+    level = "debug",
+    skip_all,
+    fields(
+        payload_bytes = payload.len(),
+        n_attrs = string_annotations.len() + numeric_annotations.len(),
+    ),
+)]
 pub fn update<S: StateAdapter>(
     state: &mut S,
     entity_key: B256,
@@ -448,6 +466,7 @@ pub fn update<S: StateAdapter>(
 
 /// Extend an entity's `expires_at`. Updates the `$expiration` bitmap
 /// and re-encodes the RLP with the new value.
+#[tracing::instrument(name = "entitydb_extend", level = "debug", skip_all)]
 pub fn extend<S: StateAdapter>(
     state: &mut S,
     entity_key: B256,
@@ -470,6 +489,7 @@ pub fn extend<S: StateAdapter>(
 
 /// Hand an entity's ownership to `new_owner`. Updates the `$owner`
 /// bitmap and re-encodes the RLP.
+#[tracing::instrument(name = "entitydb_transfer", level = "debug", skip_all)]
 pub fn transfer<S: StateAdapter>(
     state: &mut S,
     entity_key: B256,
@@ -493,6 +513,7 @@ pub fn transfer<S: StateAdapter>(
 /// Remove an entity. Clears every bitmap entry (built-in + user),
 /// clears both ID-map slots on the system account, and tombstones the
 /// entity account (`code = nil`, `nonce = 1`).
+#[tracing::instrument(name = "entitydb_delete", level = "debug", skip_all)]
 pub fn delete<S: StateAdapter>(state: &mut S, entity_key: B256) -> Result<()> {
     let entity_addr = entity_address(entity_key);
     let entity_id = read_entity_id(state, entity_addr)?;
@@ -524,6 +545,7 @@ pub fn delete<S: StateAdapter>(state: &mut S, entity_key: B256) -> Result<()> {
 
 /// Identical state path to [`delete`]. The contract has already
 /// validated `block.number > expiresAt`.
+#[tracing::instrument(name = "entitydb_expire", level = "debug", skip_all)]
 pub fn expire<S: StateAdapter>(state: &mut S, entity_key: B256) -> Result<()> {
     delete(state, entity_key)
 }

@@ -50,9 +50,15 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# Used by tests/profile_create_op_direct.rs to emit a chrome-trace JSON
+# Used by tests/profile_create_op_direct*.rs to emit chrome-trace JSON
 # of the spans installed in this crate + arkiv-entitydb. Bypasses reth's
 # block executor entirely so the trace contains no payload-builder /
 # state-root / sealing / tokio noise.
 tracing-chrome = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# `optional_eip3607` exposes CfgEnv::disable_eip3607 so the direct-
+# precompile baseline test can use ENTITY_REGISTRY_ADDRESS (a code-
+# bearing account) as `tx.caller` to satisfy the precompile's caller
+# restriction synthetically. No-op for any tx whose caller is an EOA.
+revm = { workspace = true, features = ["optional_eip3607"] }

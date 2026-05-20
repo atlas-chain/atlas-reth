@@ -161,6 +161,18 @@ profile-create:
     @echo "trace: {{ tmp_dir }}/arkiv.create.trace.json"
     @echo "load:  https://ui.perfetto.dev"
 
+# Same workload as `profile-create` but txs target the precompile
+# address directly, bypassing EntityRegistry.execute. The median
+# difference against `profile-create` is the wall-clock cost the
+# contract adds — useful for sizing the "drop the contract" proposal.
+profile-create-precompile:
+    cargo test --test profile_create_op_direct_precompile -p arkiv-node -- --nocapture
+    @echo
+    @echo "trace: {{ tmp_dir }}/arkiv.create.precompile.trace.json"
+
+# Run both and print medians back-to-back for direct comparison.
+profile-create-compare: profile-create profile-create-precompile
+
 # ── Dev Helpers ──────────────────────────────────────────────
 
 # Verify EntityRegistry is deployed (requires running node)

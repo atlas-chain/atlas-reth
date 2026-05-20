@@ -9,6 +9,8 @@
 
 mod common;
 
+use std::time::{Duration, Instant};
+
 use alloy_evm::Evm;
 use alloy_op_evm::OpTx;
 use alloy_primitives::{Address, B256, TxKind, U256};
@@ -16,11 +18,13 @@ use alloy_sol_types::SolCall;
 use arkiv_genesis::ENTITY_REGISTRY_ADDRESS;
 use eyre::Result;
 use op_revm::{OpTransaction, transaction::deposit::DepositTransactionParts};
+use revm::DatabaseCommit;
 use revm::context::TxEnv;
+use revm::context::result::ResultAndState;
 
-use common::{Operation, boot_direct_evm, executeCall, init_tracing, pack_mime};
+use common::{Operation, boot_direct_evm, executeCall, init_tracing, pack_mime, print_timing};
 
-const N_CREATE: usize = 10;
+const N_CREATE: usize = 100;
 const OP_CREATE: u8 = 1;
 
 const TRACE_PATH: &str = concat!(
@@ -38,17 +42,21 @@ fn profile_create_op_direct() -> Result<()> {
     // Start recording AFTER setup so the trace captures only the loop.
     let _flush_guard = init_tracing(TRACE_PATH)?;
 
-    // `transact_commit` calls `transact_raw` (emits `evm_tx`) and writes
-    // the state diff back, so each iteration sees the previous nonce
-    // bump and new entity / pair accounts.
+    // Time each `evm.transact` (the per-tx EVM-internal work — same
+    // thing wrapped by the `evm_tx` span). State commit happens
+    // separately so it doesn't contaminate the sample.
+    let mut samples: Vec<Duration> = Vec::with_capacity(N_CREATE);
     for (i, tx) in txs.into_iter().enumerate() {
-        let result = evm.transact_commit(tx)?;
+        let t0 = Instant::now();
+        let ResultAndState { result, state } = evm.transact(tx)?;
+        samples.push(t0.elapsed());
         if !result.is_success() {
             eyre::bail!("tx #{i} did not succeed: {result:?}");
         }
+        evm.db_mut().commit(state);
     }
 
-    eprintln!("==> ran {N_CREATE} direct CREATEs");
+    print_timing(&mut samples, "EntityRegistry CREATE");
     eprintln!("==> trace at {TRACE_PATH}");
 
     Ok(())

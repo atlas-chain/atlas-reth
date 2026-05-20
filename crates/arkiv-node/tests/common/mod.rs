@@ -8,9 +8,10 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+use std::time::Duration;
 
 use alloy_evm::{EvmEnv, EvmFactory, revm::inspector::NoOpInspector};
-use alloy_primitives::{Address, FixedBytes, U256};
+use alloy_primitives::{Address, B256, FixedBytes, U256, keccak256};
 use alloy_sol_types::sol;
 use arkiv_genesis::{dev_signers, genesis_alloc};
 use arkiv_node::evm::{ArkivOpEvm, ArkivOpEvmFactory};
@@ -25,8 +26,9 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 /// call sites don't have to thread generic bounds through.
 pub type DirectEvm = ArkivOpEvm<CacheDB<EmptyDB>, NoOpInspector>;
 
-// Mirror of EntityRegistry.execute(Operation[]) — same shape as
-// e2e/src/lib.rs uses. Kept here so tests have no dep on the e2e crate.
+// Mirror of EntityRegistry.execute(Operation[]) and the OpRecord shape
+// the precompile decodes. Kept here so tests have no dep on the e2e
+// crate or on the private sol! block in arkiv_node::precompile.
 sol! {
     #[derive(Debug)]
     struct Mime128 { bytes32[4] data; }
@@ -34,6 +36,7 @@ sol! {
     #[derive(Debug)]
     struct Attribute { bytes32 name; uint8 valueType; bytes32[4] value; }
 
+    // What the SDK / EOA sends to EntityRegistry.execute.
     #[derive(Debug)]
     struct Operation {
         uint8 operationType;
@@ -43,6 +46,21 @@ sol! {
         Attribute[] attributes;
         uint32 btl;
         address newOwner;
+    }
+
+    // What the EntityRegistry contract forwards to the precompile.
+    // The contract derives `sender`, `entityKey` (for CREATE),
+    // `newExpiresAt` (= block.number + btl) before passing through.
+    #[derive(Debug)]
+    struct OpRecord {
+        uint8 operationType;
+        address sender;
+        bytes32 entityKey;
+        address newOwner;
+        uint32 newExpiresAt;
+        bytes payload;
+        Mime128 contentType;
+        Attribute[] attributes;
     }
 
     function execute(Operation[] ops) external;
@@ -77,7 +95,11 @@ pub fn boot_direct_evm() -> Result<(DirectEvm, Address)> {
     }
 
     let factory = ArkivOpEvmFactory::new();
-    let env = EvmEnv::default(); // OpSpecId default = JOVIAN; cfg.chain_id = 1
+    let mut env = EvmEnv::default(); // OpSpecId default = JOVIAN; cfg.chain_id = 1
+    // Allow tests to set `tx.caller = ENTITY_REGISTRY_ADDRESS` (a
+    // code-bearing account) to synthetically pass the precompile's
+    // caller check. EIP-3607 would otherwise reject the tx.
+    env.cfg_env.disable_eip3607 = true;
     let evm = factory.create_evm(db, env);
 
     let sender = dev_signers(1)?[0].address();
@@ -124,4 +146,33 @@ pub fn pack_mime(s: &str) -> Mime128 {
             FixedBytes::from_slice(&buf[96..128]),
         ],
     }
+}
+
+/// `keccak256(abi.encodePacked(chainId, registry, sender, nonce))` —
+/// the formula EntityRegistry.sol uses to derive entity keys for CREATE.
+/// Tests that bypass the contract and call the precompile directly must
+/// compute this themselves.
+pub fn compute_entity_key(chain_id: u64, registry: Address, sender: Address, nonce: u32) -> B256 {
+    let mut buf = Vec::with_capacity(32 + 20 + 20 + 4);
+    buf.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+    buf.extend_from_slice(registry.as_slice());
+    buf.extend_from_slice(sender.as_slice());
+    buf.extend_from_slice(&nonce.to_be_bytes());
+    keccak256(&buf)
+}
+
+/// Print median / p95 / p99 of a duration sample, in microseconds. The
+/// slice is sorted in place. Used by the profile tests to surface a
+/// stable per-tx number alongside the chrome trace.
+pub fn print_timing(samples: &mut [Duration], label: &str) {
+    samples.sort();
+    let n = samples.len();
+    let pct = |p: usize| samples[((n * p) / 100).min(n - 1)];
+    let us = |d: Duration| d.as_nanos() as f64 / 1_000.0;
+    eprintln!(
+        "==> {label:<28} N={n:<5}  median={:>7.2}µs  p95={:>7.2}µs  p99={:>7.2}µs",
+        us(samples[n / 2]),
+        us(pct(95)),
+        us(pct(99)),
+    );
 }

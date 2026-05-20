@@ -815,3 +815,468 @@ fn u16_at(data: &[u8], pos: usize, ctx: &str) -> Result<u16> {
         .map(|s| u16::from_be_bytes(s.try_into().unwrap()))
         .ok_or_else(|| eyre::eyre!("IndexTree: truncated ({ctx})"))
 }
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn tree(keys: &[&[u8]]) -> IndexTree {
+        let mut t = IndexTree::new();
+        for &k in keys {
+            assert!(t.insert(k.to_vec()), "duplicate in test setup: {k:?}");
+        }
+        t
+    }
+
+    fn all(t: &IndexTree) -> Vec<Vec<u8>> {
+        t.iter_gte(b"").collect()
+    }
+
+    fn uint_key(n: u64) -> Vec<u8> {
+        let mut v = vec![0u8; 32];
+        v[24..].copy_from_slice(&n.to_be_bytes());
+        v
+    }
+
+    fn single_byte_keys(n: usize) -> IndexTree {
+        let mut t = IndexTree::new();
+        for i in 0..n {
+            t.insert(vec![i as u8]);
+        }
+        t
+    }
+
+    fn roundtrip(t: &IndexTree) -> IndexTree {
+        let bytes = t.to_bytes();
+        IndexTree::from_bytes(&bytes).expect("from_bytes failed")
+    }
+
+    // ── basic operations ──────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_tree() {
+        let t = IndexTree::new();
+        assert!(t.is_empty());
+        assert_eq!(t.len(), 0);
+        assert_eq!(all(&t), Vec::<Vec<u8>>::new());
+    }
+
+    #[test]
+    fn insert_single() {
+        let mut t = IndexTree::new();
+        assert!(t.insert(b"hello".to_vec()));
+        assert_eq!(t.len(), 1);
+        assert!(!t.is_empty());
+    }
+
+    #[test]
+    fn insert_duplicate_returns_false() {
+        let mut t = IndexTree::new();
+        assert!(t.insert(b"hello".to_vec()));
+        assert!(!t.insert(b"hello".to_vec()));
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn remove_existing_returns_true() {
+        let mut t = tree(&[b"hello", b"world"]);
+        assert!(t.remove(b"hello"));
+        assert_eq!(t.len(), 1);
+        assert_eq!(all(&t), vec![b"world".to_vec()]);
+    }
+
+    #[test]
+    fn remove_absent_returns_false() {
+        let mut t = tree(&[b"hello"]);
+        assert!(!t.remove(b"nope"));
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn remove_from_empty_returns_false() {
+        assert!(!IndexTree::new().remove(b"anything"));
+    }
+
+    #[test]
+    fn insert_remove_all_becomes_empty() {
+        let mut t = tree(&[b"a", b"b", b"c"]);
+        t.remove(b"a");
+        t.remove(b"b");
+        t.remove(b"c");
+        assert!(t.is_empty());
+        assert_eq!(t.len(), 0);
+    }
+
+    // ── empty key ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_key_is_valid() {
+        let mut t = IndexTree::new();
+        assert!(t.insert(vec![]));
+        assert_eq!(t.len(), 1);
+        assert!(t.remove(b""));
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn empty_key_alongside_others() {
+        let t = tree(&[b"", b"a", b"ab"]);
+        assert_eq!(t.len(), 3);
+        assert_eq!(all(&t), vec![b"".to_vec(), b"a".to_vec(), b"ab".to_vec()]);
+    }
+
+    // ── prefix-of-another-key (has_end) ───────────────────────────────────────
+
+    #[test]
+    fn prefix_key_preserved_when_longer_inserted_after() {
+        let t = tree(&[b"ap", b"apple"]);
+        assert_eq!(all(&t), vec![b"ap".to_vec(), b"apple".to_vec()]);
+    }
+
+    #[test]
+    fn prefix_key_preserved_when_inserted_after_longer() {
+        let t = tree(&[b"apple", b"ap"]);
+        assert_eq!(all(&t), vec![b"ap".to_vec(), b"apple".to_vec()]);
+    }
+
+    #[test]
+    fn remove_prefix_key_leaves_longer() {
+        let mut t = tree(&[b"ap", b"apple"]);
+        assert!(t.remove(b"ap"));
+        assert_eq!(all(&t), vec![b"apple".to_vec()]);
+    }
+
+    #[test]
+    fn remove_longer_key_leaves_prefix() {
+        let mut t = tree(&[b"ap", b"apple"]);
+        assert!(t.remove(b"apple"));
+        assert_eq!(all(&t), vec![b"ap".to_vec()]);
+    }
+
+    #[test]
+    fn three_level_prefix_chain() {
+        let mut t = tree(&[b"a", b"ab", b"abc"]);
+        assert_eq!(all(&t), vec![b"a".to_vec(), b"ab".to_vec(), b"abc".to_vec()]);
+        t.remove(b"ab");
+        assert_eq!(all(&t), vec![b"a".to_vec(), b"abc".to_vec()]);
+    }
+
+    // ── ordering ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn keys_returned_in_ascending_byte_order_regardless_of_insertion_order() {
+        let mut t = IndexTree::new();
+        for k in [b"cherry" as &[u8], b"apple", b"banana"].iter().rev() {
+            t.insert(k.to_vec());
+        }
+        assert_eq!(all(&t), vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]);
+    }
+
+    #[test]
+    fn byte_ordering_is_unsigned_not_ascii() {
+        let t = tree(&[b"\xff", b"z", b"a"]);
+        assert_eq!(all(&t), vec![b"a".to_vec(), b"z".to_vec(), b"\xff".to_vec()]);
+    }
+
+    // ── range iterators ───────────────────────────────────────────────────────
+
+    fn fruit_tree() -> IndexTree {
+        tree(&[b"apple", b"banana", b"cherry", b"date", b"elderberry"])
+    }
+
+    #[test]
+    fn iter_gt_excludes_exact_lower_bound() {
+        let r: Vec<_> = fruit_tree().iter_gt(b"banana").collect();
+        assert_eq!(r, vec![b"cherry".to_vec(), b"date".to_vec(), b"elderberry".to_vec()]);
+    }
+
+    #[test]
+    fn iter_gte_includes_exact_lower_bound() {
+        let r: Vec<_> = fruit_tree().iter_gte(b"banana").collect();
+        assert_eq!(r, vec![
+            b"banana".to_vec(), b"cherry".to_vec(), b"date".to_vec(), b"elderberry".to_vec(),
+        ]);
+    }
+
+    #[test]
+    fn iter_lt_excludes_exact_upper_bound() {
+        let r: Vec<_> = fruit_tree().iter_lt(b"cherry").collect();
+        assert_eq!(r, vec![b"apple".to_vec(), b"banana".to_vec()]);
+    }
+
+    #[test]
+    fn iter_lte_includes_exact_upper_bound() {
+        let r: Vec<_> = fruit_tree().iter_lte(b"cherry").collect();
+        assert_eq!(r, vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]);
+    }
+
+    #[test]
+    fn iter_gt_above_max_yields_empty() {
+        assert_eq!(fruit_tree().iter_gt(b"zzz").count(), 0);
+    }
+
+    #[test]
+    fn iter_lt_below_min_yields_empty() {
+        assert_eq!(fruit_tree().iter_lt(b"aaa").count(), 0);
+    }
+
+    #[test]
+    fn iter_gt_bound_not_in_tree() {
+        let r: Vec<_> = fruit_tree().iter_gt(b"bo").collect();
+        assert_eq!(r, vec![b"cherry".to_vec(), b"date".to_vec(), b"elderberry".to_vec()]);
+    }
+
+    // ── prefix iterator ───────────────────────────────────────────────────────
+
+    #[test]
+    fn iter_prefix_matches_shared_prefix() {
+        let t = tree(&[b"image/png", b"image/jpeg", b"video/mp4", b"audio/mp3"]);
+        let mut r: Vec<_> = t.iter_prefix(b"image/").collect();
+        r.sort();
+        assert_eq!(r, vec![b"image/jpeg".to_vec(), b"image/png".to_vec()]);
+    }
+
+    #[test]
+    fn iter_prefix_empty_prefix_returns_all() {
+        assert_eq!(fruit_tree().iter_prefix(b"").count(), 5);
+    }
+
+    #[test]
+    fn iter_prefix_no_match_yields_empty() {
+        assert_eq!(fruit_tree().iter_prefix(b"xyz").count(), 0);
+    }
+
+    #[test]
+    fn iter_prefix_exact_match_returns_that_key() {
+        let r: Vec<_> = fruit_tree().iter_prefix(b"banana").collect();
+        assert_eq!(r, vec![b"banana".to_vec()]);
+    }
+
+    #[test]
+    fn iter_prefix_includes_key_equal_to_prefix() {
+        let t = tree(&[b"ap", b"apple", b"banana"]);
+        let mut r: Vec<_> = t.iter_prefix(b"ap").collect();
+        r.sort();
+        assert_eq!(r, vec![b"ap".to_vec(), b"apple".to_vec()]);
+    }
+
+    // ── uint-style 32-byte keys ───────────────────────────────────────────────
+
+    #[test]
+    fn uint_iter_gt_exclusive() {
+        let mut t = IndexTree::new();
+        for i in [10u64, 11, 200, 500, 1000] { t.insert(uint_key(i)); }
+        let r: Vec<_> = t.iter_gt(&uint_key(11)).collect();
+        assert_eq!(r, vec![uint_key(200), uint_key(500), uint_key(1000)]);
+    }
+
+    #[test]
+    fn uint_iter_lte_inclusive() {
+        let mut t = IndexTree::new();
+        for i in [10u64, 11, 200] { t.insert(uint_key(i)); }
+        let r: Vec<_> = t.iter_lte(&uint_key(11)).collect();
+        assert_eq!(r, vec![uint_key(10), uint_key(11)]);
+    }
+
+    #[test]
+    fn uint_dense_range_prefix_compression() {
+        let mut t = IndexTree::new();
+        for i in 0u64..100 { t.insert(uint_key(i)); }
+        assert_eq!(t.len(), 100);
+        let gt50: Vec<_> = t.iter_gt(&uint_key(49)).collect();
+        assert_eq!(gt50.len(), 50);
+        assert_eq!(gt50[0], uint_key(50));
+        assert_eq!(gt50[49], uint_key(99));
+    }
+
+    // ── node-type grow transitions ────────────────────────────────────────────
+
+    #[test]
+    fn grow_n4_to_n16_on_fifth_child() {
+        let t = single_byte_keys(5);
+        assert_eq!(t.len(), 5);
+        assert_eq!(all(&t).len(), 5);
+    }
+
+    #[test]
+    fn grow_n16_to_n48_on_17th_child() {
+        let t = single_byte_keys(17);
+        assert_eq!(t.len(), 17);
+        assert_eq!(all(&t).len(), 17);
+    }
+
+    #[test]
+    fn grow_n48_to_n256_on_49th_child() {
+        let t = single_byte_keys(49);
+        assert_eq!(t.len(), 49);
+        assert_eq!(all(&t).len(), 49);
+    }
+
+    #[test]
+    fn full_n256_all_256_single_byte_keys() {
+        let t = single_byte_keys(256);
+        assert_eq!(t.len(), 256);
+        let keys = all(&t);
+        assert_eq!(keys.len(), 256);
+        for (i, k) in keys.iter().enumerate() {
+            assert_eq!(k, &vec![i as u8]);
+        }
+    }
+
+    // ── node-type shrink transitions ──────────────────────────────────────────
+
+    #[test]
+    fn shrink_n16_to_n4_on_removal() {
+        let mut t = single_byte_keys(5);
+        for i in 1..5 { t.remove(&[i as u8]); }
+        assert_eq!(t.len(), 1);
+        assert_eq!(all(&t), vec![vec![0u8]]);
+    }
+
+    #[test]
+    fn shrink_n48_to_n16_on_removal() {
+        let mut t = single_byte_keys(17);
+        for i in 1..17 { t.remove(&[i as u8]); }
+        assert_eq!(t.len(), 1);
+        assert_eq!(all(&t), vec![vec![0u8]]);
+    }
+
+    #[test]
+    fn shrink_n256_to_n48_on_removal() {
+        let mut t = single_byte_keys(49);
+        t.remove(&[48u8]);
+        assert_eq!(t.len(), 48);
+        assert_eq!(all(&t).len(), 48);
+    }
+
+    #[test]
+    fn shrink_then_grow_again_no_panic() {
+        // Regression: N48 shrinks to N16 at capacity (16 children), then a
+        // new insert must grow N16→N48 before calling add_ch.
+        let mut t = single_byte_keys(17);
+        t.remove(&[16u8]);          // → N16 with 16 children (at capacity)
+        assert!(t.insert(vec![200u8]));
+        assert_eq!(t.len(), 17);
+    }
+
+    #[test]
+    fn shrink_n4_single_child_merges_prefix_into_child() {
+        let mut t = tree(&[b"apple", b"apricot", b"banana"]);
+        t.remove(b"apricot");
+        t.remove(b"banana");
+        assert_eq!(all(&t), vec![b"apple".to_vec()]);
+        assert_eq!(t.len(), 1);
+    }
+
+    // ── serialization round-trips ─────────────────────────────────────────────
+
+    #[test]
+    fn roundtrip_empty_tree() {
+        let rt = roundtrip(&IndexTree::new());
+        assert!(rt.is_empty());
+        assert_eq!(all(&rt), Vec::<Vec<u8>>::new());
+    }
+
+    #[test]
+    fn roundtrip_single_leaf() {
+        let rt = roundtrip(&tree(&[b"hello"]));
+        assert_eq!(all(&rt), vec![b"hello".to_vec()]);
+    }
+
+    #[test]
+    fn roundtrip_with_prefix_compression() {
+        let t = tree(&[b"apple", b"apply", b"apt", b"banana"]);
+        let rt = roundtrip(&t);
+        assert_eq!(all(&rt), all(&t));
+    }
+
+    #[test]
+    fn roundtrip_preserves_has_end_flag() {
+        let t = tree(&[b"a", b"ab", b"abc"]);
+        let rt = roundtrip(&t);
+        assert_eq!(all(&rt), vec![b"a".to_vec(), b"ab".to_vec(), b"abc".to_vec()]);
+    }
+
+    #[test]
+    fn roundtrip_n48_node() {
+        let t = single_byte_keys(17);
+        let rt = roundtrip(&t);
+        assert_eq!(rt.len(), 17);
+        assert_eq!(all(&rt), all(&t));
+    }
+
+    #[test]
+    fn roundtrip_n256_node() {
+        let t = single_byte_keys(49);
+        let rt = roundtrip(&t);
+        assert_eq!(rt.len(), 49);
+        assert_eq!(all(&rt), all(&t));
+    }
+
+    #[test]
+    fn roundtrip_uint_keys() {
+        let mut t = IndexTree::new();
+        for i in 0u64..50 { t.insert(uint_key(i)); }
+        let rt = roundtrip(&t);
+        assert_eq!(rt.len(), t.len());
+        assert_eq!(all(&rt), all(&t));
+    }
+
+    #[test]
+    fn roundtrip_preserves_len_field() {
+        let rt = roundtrip(&single_byte_keys(42));
+        assert_eq!(rt.len(), 42);
+    }
+
+    // ── serialization determinism ─────────────────────────────────────────────
+
+    #[test]
+    fn deterministic_regardless_of_insertion_order() {
+        let keys: &[&[u8]] = &[b"apple", b"banana", b"cherry", b"date"];
+        let mut t1 = IndexTree::new();
+        for &k in keys { t1.insert(k.to_vec()); }
+        let mut t2 = IndexTree::new();
+        for &k in keys.iter().rev() { t2.insert(k.to_vec()); }
+        assert_eq!(t1.to_bytes(), t2.to_bytes());
+    }
+
+    #[test]
+    fn deterministic_after_insert_and_remove() {
+        let keys: &[&[u8]] = &[b"apple", b"banana", b"cherry"];
+        let t_base = tree(keys);
+        let mut t_extra = tree(keys);
+        t_extra.insert(b"date".to_vec());
+        t_extra.remove(b"date");
+        assert_eq!(t_base.to_bytes(), t_extra.to_bytes());
+    }
+
+    // ── serialization error handling ──────────────────────────────────────────
+
+    #[test]
+    fn from_bytes_rejects_empty_input() {
+        assert!(IndexTree::from_bytes(&[]).is_err());
+    }
+
+    #[test]
+    fn from_bytes_rejects_truncated_header() {
+        assert!(IndexTree::from_bytes(&[0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn from_bytes_rejects_unknown_tag() {
+        let mut bytes = IndexTree::new().to_bytes();
+        bytes[4] = 0xFF;
+        assert!(IndexTree::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn from_bytes_rejects_trailing_data() {
+        let mut bytes = tree(&[b"hello"]).to_bytes();
+        bytes.push(0x00);
+        assert!(IndexTree::from_bytes(&bytes).is_err());
+    }
+}

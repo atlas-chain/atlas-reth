@@ -16,6 +16,10 @@
 //! 10. atBlock — historical query observes pre-transfer state.
 //! 11. Pagination — 30 entities, page_size=10, follow cursor across
 //!     three pages with no overlap.
+//! 12. Range queries — `>`, `>=`, `<`, `<=` on numeric attributes and
+//!     `$createdAtBlock`.
+//! 13. Glob queries — `~` / `!~` prefix matching on `$contentType`
+//!     and user string attributes.
 //!
 //! All op submission, ABI encoding, signing, and query plumbing
 //! lives in [`arkiv_e2e`] (the crate's `src/lib.rs`). This file is
@@ -315,6 +319,148 @@ async fn full_pipeline() -> eyre::Result<()> {
     keys.sort();
     keys.dedup();
     assert_eq!(keys.len(), 30, "all returned keys are unique across pages");
+
+    // ── 12. Range queries ───────────────────────────────────────────
+    //
+    // Five entities with `price` at [10, 25, 50, 75, 100], isolated
+    // by `range_batch="price_test"` so earlier entities don't bleed
+    // into the assertions. Also verifies `$createdAtBlock` range scan.
+
+    let block_before_range_batch = world.head_block().await?;
+    let prices = [10u64, 25, 50, 75, 100];
+    for &p in &prices {
+        world
+            .create(
+                0,
+                CreateOp::new()
+                    .content_type("application/octet-stream")
+                    .btl(1_000)
+                    .string_attr("range_batch", "price_test")
+                    .numeric_attr("price", p),
+            )
+            .await?;
+    }
+    let block_after_range_batch = world.head_block().await?;
+
+    let gt50 = world.query(r#"price > 50 && range_batch = "price_test""#).await?;
+    assert_eq!(gt50.len(), 2, "price > 50: expect 75 and 100");
+
+    let gte50 = world.query(r#"price >= 50 && range_batch = "price_test""#).await?;
+    assert_eq!(gte50.len(), 3, "price >= 50: expect 50, 75, 100");
+
+    let lt50 = world.query(r#"price < 50 && range_batch = "price_test""#).await?;
+    assert_eq!(lt50.len(), 2, "price < 50: expect 10, 25");
+
+    let lte50 = world.query(r#"price <= 50 && range_batch = "price_test""#).await?;
+    assert_eq!(lte50.len(), 3, "price <= 50: expect 10, 25, 50");
+
+    // Composed range: 25 <= price <= 75
+    let mid_range = world
+        .query(r#"price >= 25 && price <= 75 && range_batch = "price_test""#)
+        .await?;
+    assert_eq!(mid_range.len(), 3, "25 <= price <= 75: expect 25, 50, 75");
+
+    // $createdAtBlock range covers exactly the five entities just created.
+    let by_block = world
+        .query(&format!(
+            r#"$createdAtBlock >= {} && $createdAtBlock <= {} && range_batch = "price_test""#,
+            block_before_range_batch + 1,
+            block_after_range_batch,
+        ))
+        .await?;
+    assert_eq!(by_block.len(), 5, "$createdAtBlock range covers all 5 price entities");
+
+    // ── 13. Glob queries ─────────────────────────────────────────────
+    //
+    // Glob (`~`) and not-glob (`!~`) on `$contentType` and a user
+    // string attribute. Entities are isolated by a batch marker so
+    // earlier entities don't pollute counts.
+
+    world
+        .create(
+            0,
+            CreateOp::new()
+                .content_type("video/mp4")
+                .btl(1_000)
+                .string_attr("glob_batch", "ct_test"),
+        )
+        .await?;
+    world
+        .create(
+            0,
+            CreateOp::new()
+                .content_type("video/webm")
+                .btl(1_000)
+                .string_attr("glob_batch", "ct_test"),
+        )
+        .await?;
+    world
+        .create(
+            0,
+            CreateOp::new()
+                .content_type("audio/mp3")
+                .btl(1_000)
+                .string_attr("glob_batch", "ct_test"),
+        )
+        .await?;
+
+    // "video/*" prefix matches mp4 and webm only.
+    let videos = world
+        .query(r#"$contentType ~ "video/*" && glob_batch = "ct_test""#)
+        .await?;
+    assert_eq!(videos.len(), 2, "$contentType ~ video/*: mp4 + webm");
+
+    // Negated glob within the batch: all non-video entities → audio/mp3.
+    let non_videos = world
+        .query(r#"glob_batch = "ct_test" && $contentType !~ "video/*""#)
+        .await?;
+    assert_eq!(non_videos.len(), 1, "$contentType !~ video/*: only audio/mp3");
+    assert_eq!(non_videos[0].content_type.as_deref(), Some("audio/mp3"));
+
+    // Glob on a user string attribute.
+    let genre_keys = [
+        world
+            .create(
+                0,
+                CreateOp::new()
+                    .btl(1_000)
+                    .string_attr("genre", "podcast/tech")
+                    .string_attr("genre_batch", "test"),
+            )
+            .await?,
+        world
+            .create(
+                0,
+                CreateOp::new()
+                    .btl(1_000)
+                    .string_attr("genre", "podcast/music")
+                    .string_attr("genre_batch", "test"),
+            )
+            .await?,
+        world
+            .create(
+                0,
+                CreateOp::new()
+                    .btl(1_000)
+                    .string_attr("genre", "news")
+                    .string_attr("genre_batch", "test"),
+            )
+            .await?,
+    ];
+
+    // "podcast/*" matches tech and music, not news.
+    let podcasts = world.query(r#"genre ~ "podcast/*""#).await?;
+    assert_eq!(podcasts.len(), 2, "genre ~ podcast/*: tech + music");
+    let podcast_keys: Vec<B256> = podcasts.iter().map(|e| e.key).collect();
+    assert!(podcast_keys.contains(&genre_keys[0]));
+    assert!(podcast_keys.contains(&genre_keys[1]));
+
+    // !~ within the batch: only the "news" entity survives.
+    let not_podcasts = world
+        .query(r#"genre_batch = "test" && genre !~ "podcast/*""#)
+        .await?;
+    assert_eq!(not_podcasts.len(), 1, "genre !~ podcast/*: only news");
+    assert_eq!(not_podcasts[0].key, genre_keys[2]);
 
     Ok(())
 }

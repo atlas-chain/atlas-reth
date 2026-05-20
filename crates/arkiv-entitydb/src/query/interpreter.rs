@@ -77,7 +77,7 @@ fn eval<S: StateAdapter>(query: &Query, state: &mut S) -> Result<Bitmap> {
             let tree = read_index_tree(state, attr_key)?;
             let mut result = Bitmap::new();
             for val in tree.iter_gt(&value.0) {
-                result.union_with(&read_pair_bitmap(state, attr_key, val)?);
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
             }
             Ok(result)
         }
@@ -86,7 +86,7 @@ fn eval<S: StateAdapter>(query: &Query, state: &mut S) -> Result<Bitmap> {
             let tree = read_index_tree(state, attr_key)?;
             let mut result = Bitmap::new();
             for val in tree.iter_gte(&value.0) {
-                result.union_with(&read_pair_bitmap(state, attr_key, val)?);
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
             }
             Ok(result)
         }
@@ -95,7 +95,7 @@ fn eval<S: StateAdapter>(query: &Query, state: &mut S) -> Result<Bitmap> {
             let tree = read_index_tree(state, attr_key)?;
             let mut result = Bitmap::new();
             for val in tree.iter_lt(&value.0) {
-                result.union_with(&read_pair_bitmap(state, attr_key, val)?);
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
             }
             Ok(result)
         }
@@ -104,7 +104,7 @@ fn eval<S: StateAdapter>(query: &Query, state: &mut S) -> Result<Bitmap> {
             let tree = read_index_tree(state, attr_key)?;
             let mut result = Bitmap::new();
             for val in tree.iter_lte(&value.0) {
-                result.union_with(&read_pair_bitmap(state, attr_key, val)?);
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
             }
             Ok(result)
         }
@@ -113,7 +113,7 @@ fn eval<S: StateAdapter>(query: &Query, state: &mut S) -> Result<Bitmap> {
             let tree = read_index_tree(state, attr_key)?;
             let mut result = Bitmap::new();
             for val in tree.iter_prefix(&value.0) {
-                result.union_with(&read_pair_bitmap(state, attr_key, val)?);
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
             }
             Ok(result)
         }

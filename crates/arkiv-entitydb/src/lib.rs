@@ -267,120 +267,12 @@ impl FromIterator<u64> for Bitmap {
 
 // ─── IndexTree (Tier-2 ordered value set) ─────────────────────────────
 
-/// Ordered set of attribute values for a single attribute key, stored
-/// in an **index account** at [`index_address`].
-///
-/// Backed by [`std::collections::BTreeSet<Vec<u8>>`] — O(log n) range
-/// and prefix scans, deterministic iteration order (ascending byte
-/// order).
-///
-/// Determinism guarantee: [`IndexTree::to_bytes`] produces the same
-/// bytes for any two instances with the same value set. Required for
-/// `codeHash = keccak256(index_bytes)` to agree across nodes.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct IndexTree(std::collections::BTreeSet<Vec<u8>>);
-
-impl IndexTree {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Insert `val`. Returns `true` if the value was not already present.
-    pub fn insert(&mut self, val: Vec<u8>) -> bool {
-        self.0.insert(val)
-    }
-
-    /// Remove `val`. Returns `true` if the value was present.
-    pub fn remove(&mut self, val: &[u8]) -> bool {
-        self.0.remove(val)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Values strictly greater than `lo`, in ascending byte order.
-    pub fn iter_gt(&self, lo: &[u8]) -> impl Iterator<Item = &Vec<u8>> {
-        use std::ops::Bound::{Excluded, Unbounded};
-        self.0.range((Excluded(lo.to_vec()), Unbounded))
-    }
-
-    /// Values greater than or equal to `lo`, in ascending byte order.
-    pub fn iter_gte(&self, lo: &[u8]) -> impl Iterator<Item = &Vec<u8>> {
-        use std::ops::Bound::{Included, Unbounded};
-        self.0.range((Included(lo.to_vec()), Unbounded))
-    }
-
-    /// Values strictly less than `hi`, in ascending byte order.
-    pub fn iter_lt(&self, hi: &[u8]) -> impl Iterator<Item = &Vec<u8>> {
-        use std::ops::Bound::{Excluded, Unbounded};
-        self.0.range((Unbounded, Excluded(hi.to_vec())))
-    }
-
-    /// Values less than or equal to `hi`, in ascending byte order.
-    pub fn iter_lte(&self, hi: &[u8]) -> impl Iterator<Item = &Vec<u8>> {
-        use std::ops::Bound::{Included, Unbounded};
-        self.0.range((Unbounded, Included(hi.to_vec())))
-    }
-
-    /// Values whose byte representation starts with `prefix`, in
-    /// ascending byte order.
-    pub fn iter_prefix<'a>(&'a self, prefix: &'a [u8]) -> impl Iterator<Item = &'a Vec<u8>> {
-        self.0.iter().filter(move |v| v.starts_with(prefix))
-    }
-
-    /// Serialize to a compact deterministic binary format:
-    /// `[u32 BE count][u16 BE len][bytes]…`
-    ///
-    /// `BTreeSet` iterates in ascending byte order, so equal sets
-    /// always produce identical bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(self.0.len() as u32).to_be_bytes());
-        for entry in &self.0 {
-            buf.extend_from_slice(&(entry.len() as u16).to_be_bytes());
-            buf.extend_from_slice(entry);
-        }
-        buf
-    }
-
-    /// Deserialize from the format produced by [`to_bytes`]. Empty
-    /// bytes → empty tree (matches the `tombstone_code` / absent-account
-    /// convention used by pair bitmaps).
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.is_empty() {
-            return Ok(Self::new());
-        }
-        if bytes.len() < 4 {
-            eyre::bail!("IndexTree: too short for count field ({} bytes)", bytes.len());
-        }
-        let count = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
-        let mut pos = 4;
-        let mut set = std::collections::BTreeSet::new();
-        for i in 0..count {
-            if pos + 2 > bytes.len() {
-                eyre::bail!("IndexTree: truncated at entry {i} length field");
-            }
-            let len = u16::from_be_bytes(bytes[pos..pos + 2].try_into().unwrap()) as usize;
-            pos += 2;
-            if pos + len > bytes.len() {
-                eyre::bail!(
-                    "IndexTree: truncated at entry {i} data (need {len}, have {})",
-                    bytes.len() - pos
-                );
-            }
-            set.insert(bytes[pos..pos + len].to_vec());
-            pos += len;
-        }
-        if pos != bytes.len() {
-            eyre::bail!(
-                "IndexTree: {} trailing bytes after {count} entries",
-                bytes.len() - pos
-            );
-        }
-        Ok(Self(set))
-    }
-}
+mod index_tree;
+/// Adaptive Radix Tree ordered set of attribute values for a single
+/// attribute key, stored in an **index account** at [`index_address`].
+/// Provides O(log n) insert/remove, prefix-compressed deterministic
+/// serialisation, and ascending range/prefix iteration.
+pub use index_tree::IndexTree;
 
 // ─── Entity RLP ───────────────────────────────────────────────────────
 
@@ -1250,8 +1142,8 @@ mod tests {
         tree.insert(b"banana".to_vec());
         tree.insert(b"cherry".to_vec());
         let decoded = IndexTree::from_bytes(&tree.to_bytes()).expect("decode");
-        let vals: Vec<&[u8]> = decoded.iter_gte(b"").map(|v| v.as_slice()).collect();
-        assert_eq!(vals, [b"apple".as_slice(), b"banana", b"cherry"]);
+        let vals: Vec<Vec<u8>> = decoded.iter_gte(b"").collect();
+        assert_eq!(vals, [b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]);
     }
 
     #[test]
@@ -1274,14 +1166,14 @@ mod tests {
         for v in [b"aaa", b"aab", b"abc", b"bbb", b"ccc"] {
             tree.insert(v.to_vec());
         }
-        let gt: Vec<&[u8]> = tree.iter_gt(b"aab").map(|v| v.as_slice()).collect();
-        assert_eq!(gt, [b"abc".as_slice(), b"bbb", b"ccc"]);
+        let gt: Vec<Vec<u8>> = tree.iter_gt(b"aab").collect();
+        assert_eq!(gt, [b"abc".to_vec(), b"bbb".to_vec(), b"ccc".to_vec()]);
 
-        let lte: Vec<&[u8]> = tree.iter_lte(b"aab").map(|v| v.as_slice()).collect();
-        assert_eq!(lte, [b"aaa".as_slice(), b"aab"]);
+        let lte: Vec<Vec<u8>> = tree.iter_lte(b"aab").collect();
+        assert_eq!(lte, [b"aaa".to_vec(), b"aab".to_vec()]);
 
-        let prefix: Vec<&[u8]> = tree.iter_prefix(b"aa").map(|v| v.as_slice()).collect();
-        assert_eq!(prefix, [b"aaa".as_slice(), b"aab"]);
+        let prefix: Vec<Vec<u8>> = tree.iter_prefix(b"aa").collect();
+        assert_eq!(prefix, [b"aaa".to_vec(), b"aab".to_vec()]);
     }
 
     #[test]
@@ -1293,8 +1185,8 @@ mod tests {
             insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
         }
         let tree = read_art_raw(&db, b"tag");
-        let vals: Vec<&[u8]> = tree.iter_gte(b"").map(|v| v.as_slice()).collect();
-        assert_eq!(vals, [b"hello".as_slice()], "index should contain value after first entity");
+        let vals: Vec<Vec<u8>> = tree.iter_gte(b"").collect();
+        assert_eq!(vals, [b"hello".to_vec()], "index should contain value after first entity");
 
         // Second insert of same value — bitmap was non-empty, ART unchanged.
         {

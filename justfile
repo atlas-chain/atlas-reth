@@ -149,6 +149,18 @@ spam *args='':
 simulate *args='':
     cargo run -p arkiv-cli -- simulate {{ args }}
 
+# ── Profiling ────────────────────────────────────────────────
+
+# Direct revm profile of CREATE ops → tmp/arkiv.create.trace.json.
+# Drop the JSON onto https://ui.perfetto.dev for the per-tx flame graph:
+# evm_tx → precompile_call → precompile_dispatch → entitydb_create.
+# No reth block production / RPC / tokio runtime — single thread.
+profile-create:
+    cargo test --test profile_create_op_direct -p arkiv-node -- --nocapture
+    @echo
+    @echo "trace: {{ tmp_dir }}/arkiv.create.trace.json"
+    @echo "load:  https://ui.perfetto.dev"
+
 # ── Dev Helpers ──────────────────────────────────────────────
 
 # Verify EntityRegistry is deployed (requires running node)

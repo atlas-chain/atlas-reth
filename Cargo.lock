@@ -1434,9 +1434,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
- "tracing-chrome",
- "tracing-subscriber 0.3.23",
 ]
 
 [[package]]
@@ -1498,6 +1495,8 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+ "tracing-chrome",
+ "tracing-subscriber 0.3.23",
 ]
 
 [[package]]

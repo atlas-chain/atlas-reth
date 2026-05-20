@@ -48,3 +48,11 @@ jsonrpsee.workspace = true
 serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# Used by tests/profile_create_op_direct.rs to emit a chrome-trace JSON
+# of the spans installed in this crate + arkiv-entitydb. Bypasses reth's
+# block executor entirely so the trace contains no payload-builder /
+# state-root / sealing / tokio noise.
+tracing-chrome = "0.7"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

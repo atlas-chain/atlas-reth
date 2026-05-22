@@ -2,8 +2,12 @@
 
 Orientation for coding agents working in this repo. For human-facing
 docs read [`README.md`](README.md) and
-[`docs/architecture.md`](docs/architecture.md) first. The canonical
-state model is [`docs/statedb-design.md`](docs/statedb-design.md).
+[`docs/1_overview.md`](docs/1_overview.md) first. The canonical
+state model is [`docs/2_state-model.md`](docs/2_state-model.md);
+query semantics and verification recipes are in
+[`docs/3_query.md`](docs/3_query.md); crate layout, genesis,
+testing, and the fault-proof story are in
+[`docs/4_engineering.md`](docs/4_engineering.md).
 
 ## What this repo is
 
@@ -30,8 +34,10 @@ contracts/
   src/EntityRegistry.sol             # in-tree contract source
   artifacts/EntityRegistry.runtime.hex   # baked into arkiv-genesis via include_str!
 chainspec/dev.base.json   # geth-format dev chainspec (predeploys injected at recipe time)
-docs/architecture.md      # design overview — read this
-docs/statedb-design.md    # canonical state model — read if touching precompile / RPC / gas
+docs/1_overview.md        # high-level orientation — read this first
+docs/2_state-model.md     # canonical state model — read if touching precompile / op handlers / gas
+docs/3_query.md           # query language + verification — read if touching the query path
+docs/4_engineering.md     # crate layout, genesis, testing, FP, open questions
 scripts/fixtures/         # batch JSON fixtures
 demo/fixtures/            # smaller demo fixtures
 justfile                  # all dev recipes
@@ -106,7 +112,7 @@ cargo test -p arkiv-e2e --test full_pipeline_e2e   # full pipeline e2e
   must be in `alloc` from block 0. `arkiv-cli inject-predeploy` is the
   supported path; the same chainspec file must drive both `init` and
   `node` so genesis hashes match. See
-  [`docs/architecture.md`](docs/architecture.md) §8.
+  [`docs/4_engineering.md`](docs/4_engineering.md) §2.
 - **The runtime bytecode is committed.** Edit
   `contracts/src/EntityRegistry.sol` → run `just contracts-build` to
   refresh `contracts/artifacts/EntityRegistry.runtime.hex`. The hex is
@@ -124,10 +130,12 @@ cargo test -p arkiv-e2e --test full_pipeline_e2e   # full pipeline e2e
   `arkiv-entitydb`'s op handlers via a `StateAdapter` impl over
   `EvmInternals`. The op handlers do the actual indexing math
   (system counter, ID maps, bitmap deltas, RLP encode).
-- **Query language scope.** Today's grammar is the equality family:
-  `=`, `!=`, `IN`, `NOT IN`, `&&`, `||`, `NOT`, `*` / `$all`. Range
-  (`<`, `>`, `<=`, `>=`) and glob (`~`) are deliberately absent — they
-  need an ordered sibling index that isn't built yet.
+- **Query language scope.** Equality family (`=`, `!=`, `IN`,
+  `NOT IN`, `&&`, `||`, `NOT`, `*` / `$all`), range (`<`, `>`, `<=`,
+  `>=`), and prefix-glob (`~`, `!~`) are all implemented. Range and
+  prefix-glob evaluate against the Tier-2 ART index account
+  (`keccak256("arkiv.index" || k)[:20]`). Arbitrary-pattern glob
+  (mid-pattern wildcards) is **not** supported.
 - **`transaction_index_in_block` and `operation_index_in_transaction`
   are 0 on the wire.** revm's precompile context doesn't expose either;
   they're kept in the response shape for SDK parity but never carry
@@ -138,9 +146,11 @@ cargo test -p arkiv-e2e --test full_pipeline_e2e   # full pipeline e2e
 - Prefer matching the existing terse, comment-light Rust style. Only
   add comments when the *why* is non-obvious.
 - When touching the precompile / state model / gas, update
-  [`docs/statedb-design.md`](docs/statedb-design.md) in the same
+  [`docs/2_state-model.md`](docs/2_state-model.md) in the same
   change. That doc is the canonical spec; downstream clients read
   from it.
-- When touching genesis / predeploy logic, update
-  [`docs/architecture.md`](docs/architecture.md) §8 if the
+- When touching the query path / RPC, update
+  [`docs/3_query.md`](docs/3_query.md) in the same change.
+- When touching genesis / predeploy logic or the crate layout, update
+  [`docs/4_engineering.md`](docs/4_engineering.md) if the
   operator-facing flow changes.

@@ -127,8 +127,10 @@ just genesis | jq .alloc
 ├── e2e/                      # full-pipeline integration tests
 ├── chainspec/dev.base.json   # geth-format dev chainspec sans predeploy
 ├── docs/
-│   ├── architecture.md       # system design
-│   └── statedb-design.md     # canonical state model
+│   ├── 1_overview.md         # high-level orientation
+│   ├── 2_state-model.md      # canonical state model
+│   ├── 3_query.md            # query language + verification recipes
+│   └── 4_engineering.md      # crate layout, genesis, testing, FP, open questions
 ├── scripts/fixtures/         # example batch JSON files
 ├── demo/fixtures/            # smaller demo fixtures
 ├── docker/                   # runtime + dev container images
@@ -154,7 +156,7 @@ code + system account + dev-funded accounts into `alloc`, and writes
 back. The same chainspec drives both `init` and `node`, so genesis
 hashes match.
 
-See [`docs/architecture.md`](docs/architecture.md) §8 for the
+See [`docs/4_engineering.md`](docs/4_engineering.md) §2 for the
 genesis-construction rules (Path-A chainspecs, Holocene `extraData`,
 why we don't mutate the chainspec at startup).
 
@@ -164,8 +166,10 @@ why we don't mutate the chainspec at startup).
 
 | Doc | What's in it |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | System overview, workspace layout, precompile / RPC / genesis design |
-| [`docs/statedb-design.md`](docs/statedb-design.md) | Canonical state model: entity / pair / system accounts, gas, query verification, reorg posture |
+| [`docs/1_overview.md`](docs/1_overview.md) | High-level orientation: what `arkiv-op-reth` is, system diagram, content-addressed-code principle |
+| [`docs/2_state-model.md`](docs/2_state-model.md) | Canonical state model: entity / pair / index / system accounts, op lifecycle, gas, reorg |
+| [`docs/3_query.md`](docs/3_query.md) | Query language, evaluation flow, historical reads, verification recipes |
+| [`docs/4_engineering.md`](docs/4_engineering.md) | Crate layout, genesis construction, testing surface, fault-proof story, open questions |
 
 External references:
 

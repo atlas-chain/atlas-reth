@@ -592,7 +592,7 @@ fn pack_entity_key_attr(name: &str, value: B256) -> Attribute {
     Attribute {
         name: pack_ident32(name),
         valueType: ATTR_ENTITY_KEY,
-        value: [value.into(), FixedBytes::ZERO, FixedBytes::ZERO, FixedBytes::ZERO],
+        value: [value, FixedBytes::ZERO, FixedBytes::ZERO, FixedBytes::ZERO],
     }
 }
 

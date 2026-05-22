@@ -415,7 +415,7 @@ where
     >;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        self.inner.components().executor(ArkivOpExecutorBuilder::default())
+        self.inner.components().executor(ArkivOpExecutorBuilder)
     }
 
     fn add_ons(&self) -> Self::AddOns {

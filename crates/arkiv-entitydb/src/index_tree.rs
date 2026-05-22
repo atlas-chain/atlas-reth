@@ -145,7 +145,7 @@ fn n16_to_n48(n16: N16) -> N48 {
     n48.n = n16.n;
     for (slot, (key, ch)) in n16.keys[..n16.n as usize]
         .iter().copied()
-        .zip(n16.ch.into_iter())
+        .zip(n16.ch)
         .enumerate()
     {
         n48.idx[key as usize] = slot as u8;
@@ -528,8 +528,8 @@ fn node_child_mut(node: &mut Node, b: u8) -> Option<&mut Node> {
 
 fn node_child_is_empty(node: &Node, b: u8) -> bool {
     match node {
-        Node::N4(n)   => (0..n.n as usize).find(|&i| n.keys[i] == b).map_or(true,  |i| matches!(n.ch[i], Node::Empty)),
-        Node::N16(n)  => (0..n.n as usize).find(|&i| n.keys[i] == b).map_or(true,  |i| matches!(n.ch[i], Node::Empty)),
+        Node::N4(n)   => (0..n.n as usize).find(|&i| n.keys[i] == b).is_none_or(|i| matches!(n.ch[i], Node::Empty)),
+        Node::N16(n)  => (0..n.n as usize).find(|&i| n.keys[i] == b).is_none_or(|i| matches!(n.ch[i], Node::Empty)),
         Node::N48(n)  => {
             let slot = n.idx[b as usize];
             slot == N48_NIL || matches!(n.ch[slot as usize], Node::Empty)
@@ -763,11 +763,15 @@ fn de_node(data: &[u8], pos: usize) -> Result<(Node, usize)> {
             }
             let node = if tag == TAG_N4 {
                 let mut nd = N4::empty(prefix, has_end); nd.n = n as u8;
-                for i in 0..n { nd.keys[i] = keys[i]; nd.ch[i] = children.remove(0); }
+                for (i, (k, ch)) in keys.into_iter().zip(children).enumerate() {
+                    nd.keys[i] = k; nd.ch[i] = ch;
+                }
                 Node::N4(Box::new(nd))
             } else {
                 let mut nd = N16::empty(prefix, has_end); nd.n = n as u8;
-                for i in 0..n { nd.keys[i] = keys[i]; nd.ch[i] = children.remove(0); }
+                for (i, (k, ch)) in keys.into_iter().zip(children).enumerate() {
+                    nd.keys[i] = k; nd.ch[i] = ch;
+                }
                 Node::N16(Box::new(nd))
             };
             Ok((node, p))
@@ -779,7 +783,11 @@ fn de_node(data: &[u8], pos: usize) -> Result<(Node, usize)> {
             let mut idx = Box::new([N48_NIL; 256]);
             idx.copy_from_slice(&data[p..p + 256]); p += 256;
             let mut ch: [Node; 48] = std::array::from_fn(|_| Node::Empty);
-            for i in 0..n { let (child, next) = de_node(data, p)?; p = next; ch[i] = child; }
+            for slot in ch.iter_mut().take(n) {
+                let (child, next) = de_node(data, p)?;
+                p = next;
+                *slot = child;
+            }
             Ok((Node::N48(Box::new(N48 { prefix, has_end, n: n as u8, idx, ch })), p))
         }
         TAG_N256 => {

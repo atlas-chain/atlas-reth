@@ -1457,7 +1457,6 @@ dependencies = [
  "alloy-signer-local",
  "arkiv-entitydb",
  "eyre",
- "hex",
 ]
 
 [[package]]

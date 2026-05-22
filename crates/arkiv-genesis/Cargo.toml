@@ -13,4 +13,3 @@ alloy-primitives.workspace = true
 alloy-signer-local.workspace = true
 
 eyre.workspace = true
-hex.workspace = true

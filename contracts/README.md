@@ -1,34 +1,23 @@
 # contracts
 
-Solidity sources for Arkiv's on-chain components.
+Solidity ABI surface for Arkiv. **No deployed contracts.**
+[`src/EntityRegistry.sol`](src/EntityRegistry.sol) declares the
+`IEntityRegistry` interface, `Entity` library structs / constants /
+errors, and the `EntityOperation` event. The Arkiv precompile at
+`0x4400000000000000000000000000000000000044` implements this ABI —
+EOAs and SDKs `CALL` that address with the same calldata they would
+send to a Solidity contract.
 
-| Contract | Address | Notes |
-|---|---|---|
-| [`EntityRegistry`](src/EntityRegistry.sol) | `0x4400000000000000000000000000000000000044` | User-facing entry point. Validates ownership / expiration / `Ident32` charset on attribute names, mints entity keys, dispatches to the precompile. |
-| Arkiv precompile | `0x4400000000000000000000000000000000000045` | Native Rust precompile registered by `arkiv-op-reth`'s custom `EvmFactory`. Not a Solidity contract. |
-| System account | `0x4400000000000000000000000000000000000046` | Pre-allocated empty account; the precompile writes the entity counter and ID maps to its storage slots. No code. |
+This file exists so SDK / forge consumers have a canonical ABI to
+codegen against; function selectors and event signatures match the
+v1 `EntityRegistry` contract exactly.
 
-## Build
+## Build (optional, for SDK codegen)
 
 ```
 forge build
 ```
 
-Produces `out/EntityRegistry.sol/EntityRegistry.json`. The runtime
-bytecode is committed at [`artifacts/EntityRegistry.runtime.hex`](artifacts/EntityRegistry.runtime.hex);
-`arkiv-genesis` reads it via `include_str!`.
-
-To refresh the committed artifact after editing the source:
-
-```
-just contracts-build
-```
-
-(from the repo root). CI checks that the committed artifact matches a
-fresh `forge build`.
-
-## Layout
-
-Standard Foundry. Sources in `src/`, build output in `out/`
-(gitignored). No external deps (`lib/` empty); add via `forge install`
-if needed.
+Produces `out/EntityRegistry.sol/EntityRegistry.json`. Nothing in
+`arkiv-op-reth` reads the build output — `arkiv-genesis` no longer
+bakes contract bytecode into the binary.

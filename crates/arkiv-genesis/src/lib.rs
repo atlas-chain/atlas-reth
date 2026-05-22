@@ -1,47 +1,40 @@
 //! Genesis primitives for the Arkiv chain.
 //!
 //! Provides:
-//! - the three canonical predeploy addresses (registry / precompile /
-//!   system account, at `0x44…0044 / 0045 / 0046`),
-//! - the `EntityRegistry` runtime bytecode (read at build time from
-//!   `contracts/artifacts/EntityRegistry.runtime.hex` — kept in sync
-//!   with the Solidity source in `contracts/src/` by `just contracts-build`),
+//! - [`ARKIV_ADDRESS`] (`0x44…0044`) — the precompile's registration
+//!   address. Has no genesis presence; the custom `EvmFactory`
+//!   registers the precompile here programmatically.
+//! - [`SYSTEM_ACCOUNT_ADDRESS`] (`0x44…0046`) — pre-allocated empty
+//!   account that hosts the precompile's consensus state (nonces,
+//!   entity counter, ID maps).
 //! - a convenience helper that builds the genesis `alloc` for a
 //!   self-contained Arkiv dev chain.
 //!
 //! Used by:
 //!   - `arkiv-node`: chainspec assembly at startup or build time,
-//!     predeploy detection.
+//!     system-account detection.
 //!   - `arkiv-cli inject-predeploy`: post-processing op-deployer output
-//!     to splice the predeploys into a standard OP genesis JSON.
+//!     to splice the system account into a standard OP genesis JSON.
 
 // Re-export so consumers (e.g. `arkiv-cli inject-predeploy`) don't need to
 // take a direct dep on alloy-genesis.
 pub use alloy_genesis::{Genesis, GenesisAccount};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, U256};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use eyre::{Result, bail};
 use std::collections::BTreeMap;
 
-/// Canonical predeploy address for `EntityRegistry`.
-pub const ENTITY_REGISTRY_ADDRESS: Address = Address::new([
-    0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x44,
-]);
+/// Address the custom `EvmFactory` registers the Arkiv precompile at.
+/// EOAs / SDKs `CALL` this address with the `execute(Operation[])` /
+/// `nonces(address)` ABI declared by `IEntityRegistry`. No genesis
+/// allocation is required — registration is programmatic.
+pub use arkiv_entitydb::ARKIV_ADDRESS;
 
-/// Address at which `arkiv-op-reth`'s custom `EvmFactory` registers
-/// the Arkiv precompile. Not a Solidity contract — a native Rust
-/// precompile invoked by `EntityRegistry` via a `CALL`.
-pub const ARKIV_PRECOMPILE_ADDRESS: Address = Address::new([
-    0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x45,
-]);
-
-/// Singleton account that holds the global entity counter and the
-/// trie-committed ID ↔ address maps. Re-exported from
-/// [`arkiv_entitydb`] — the state-model crate is the canonical home
-/// of the system-account address. Re-export here so consumers that
-/// only care about genesis allocs (`arkiv-cli inject-predeploy`,
-/// `arkiv-node`'s predeploy detection) don't need to depend on
-/// `arkiv-entitydb`.
+/// System account that holds the precompile's consensus state — global
+/// entity counter, per-caller `nonces` map, and the trie-committed
+/// ID ↔ address maps. Pre-allocated in genesis with empty code and
+/// `nonce = 1` so EIP-161 doesn't prune it before the precompile gets a
+/// chance to write into it.
 pub use arkiv_entitydb::SYSTEM_ACCOUNT_ADDRESS;
 
 /// First account derived from [`ARKIV_DEV_MNEMONIC`] at standard BIP-44
@@ -71,53 +64,21 @@ pub fn arkiv_dev_balance_wei() -> U256 {
     U256::from(10_000u64) * U256::from(1_000_000_000_000_000_000u128)
 }
 
-/// Runtime bytecode for `EntityRegistry`, baked in at build time from
-/// `contracts/artifacts/EntityRegistry.runtime.hex`. Refresh via
-/// `just contracts-build` after editing `contracts/src/EntityRegistry.sol`.
-const ENTITY_REGISTRY_RUNTIME_HEX: &str =
-    include_str!("../../../contracts/artifacts/EntityRegistry.runtime.hex");
-
-/// Runtime bytecode for the `EntityRegistry` predeploy.
-///
-/// Chain-id-independent — the contract reads `block.chainid` at runtime
-/// rather than baking it into a constructor immutable, so the same
-/// bytes work on every chain.
-pub fn entity_registry_runtime_code() -> Result<Bytes> {
-    let trimmed = ENTITY_REGISTRY_RUNTIME_HEX.trim();
-    let stripped = trimmed.strip_prefix("0x").unwrap_or(trimmed);
-    let bytes = hex::decode(stripped)
-        .map_err(|e| eyre::eyre!("invalid EntityRegistry runtime hex: {}", e))?;
-    if bytes.is_empty() {
-        bail!("EntityRegistry runtime bytecode is empty; run `just contracts-build`");
-    }
-    Ok(Bytes::from(bytes))
-}
-
-/// Build the complete Arkiv dev alloc: the EntityRegistry predeploy +
-/// the system account + [`ARKIV_DEV_ACCOUNT_COUNT`] mnemonic-derived
-/// accounts each prefunded with [`arkiv_dev_balance_wei`].
+/// Build the complete Arkiv dev alloc: the system account +
+/// [`ARKIV_DEV_ACCOUNT_COUNT`] mnemonic-derived accounts each prefunded
+/// with [`arkiv_dev_balance_wei`].
 pub fn genesis_alloc() -> Result<BTreeMap<Address, GenesisAccount>> {
     let mut alloc = BTreeMap::new();
     for (addr, acc) in dev_funding_alloc(ARKIV_DEV_ACCOUNT_COUNT, arkiv_dev_balance_wei())? {
         alloc.insert(addr, acc);
     }
-    alloc.insert(ENTITY_REGISTRY_ADDRESS, entity_registry_account()?);
     alloc.insert(SYSTEM_ACCOUNT_ADDRESS, system_account());
     Ok(alloc)
 }
 
-/// `GenesisAccount` for the `EntityRegistry` predeploy. Suitable for
-/// splicing into any external genesis JSON.
-pub fn entity_registry_account() -> Result<GenesisAccount> {
-    Ok(GenesisAccount {
-        code: Some(entity_registry_runtime_code()?),
-        ..Default::default()
-    })
-}
-
-/// `GenesisAccount` for the system account. Empty code, empty storage,
-/// `nonce = 1` so EIP-161 doesn't prune it before the precompile gets
-/// a chance to write into it.
+/// `GenesisAccount` for the Arkiv system account. Empty code, empty
+/// storage, `nonce = 1` so EIP-161 doesn't prune it before the
+/// precompile writes its first slot.
 pub fn system_account() -> GenesisAccount {
     GenesisAccount {
         nonce: Some(1),
@@ -198,23 +159,18 @@ mod tests {
     }
 
     #[test]
-    fn entity_registry_runtime_code_decodes() {
-        let code = entity_registry_runtime_code().expect("decode runtime hex");
-        assert!(!code.is_empty());
-        // Sanity: starts with the standard solc dispatcher prologue.
-        assert_eq!(&code[..2], &[0x60, 0x80]);
-    }
-
-    #[test]
-    fn genesis_alloc_includes_three_predeploys_and_funding() {
+    fn genesis_alloc_includes_system_account_and_funding() {
         let alloc = genesis_alloc().expect("alloc");
-        assert!(alloc.contains_key(&ENTITY_REGISTRY_ADDRESS));
         assert!(alloc.contains_key(&SYSTEM_ACCOUNT_ADDRESS));
         assert_eq!(
             alloc.get(&SYSTEM_ACCOUNT_ADDRESS).unwrap().nonce,
             Some(1),
             "system account must have nonce=1 to survive EIP-161",
         );
-        assert_eq!(alloc.len(), ARKIV_DEV_ACCOUNT_COUNT + 2);
+        assert!(
+            !alloc.contains_key(&ARKIV_ADDRESS),
+            "ARKIV_ADDRESS is a programmatic precompile target; no genesis presence",
+        );
+        assert_eq!(alloc.len(), ARKIV_DEV_ACCOUNT_COUNT + 1);
     }
 }

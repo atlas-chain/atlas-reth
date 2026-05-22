@@ -15,7 +15,7 @@ use alloy_evm::Evm;
 use alloy_op_evm::OpTx;
 use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_sol_types::SolCall;
-use arkiv_genesis::ENTITY_REGISTRY_ADDRESS;
+use arkiv_genesis::ARKIV_ADDRESS;
 use eyre::Result;
 use op_revm::{OpTransaction, transaction::deposit::DepositTransactionParts};
 use revm::DatabaseCommit;
@@ -82,7 +82,7 @@ fn build_create_tx(sender: Address, idx: u64) -> OpTx {
         caller: sender,
         gas_limit: 1_500_000,
         gas_price: 0,
-        kind: TxKind::Call(ENTITY_REGISTRY_ADDRESS),
+        kind: TxKind::Call(ARKIV_ADDRESS),
         value: U256::ZERO,
         data: calldata.into(),
         nonce: idx,

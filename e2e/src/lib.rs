@@ -32,7 +32,7 @@ use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, sol};
-use arkiv_genesis::{ENTITY_REGISTRY_ADDRESS, dev_signers};
+use arkiv_genesis::{ARKIV_ADDRESS, dev_signers};
 use arkiv_node::rpc::{EntityData, QueryResponse};
 use arkiv_node::{ArkivOpNode, install};
 use eyre::{Result, bail, eyre};
@@ -298,12 +298,12 @@ where
     }
 
     async fn create(&mut self, signer_idx: usize, op: CreateOp) -> Result<B256> {
-        // The contract derives entityKey from (chainId, registry,
+        // The precompile derives entityKey from (chainId, ARKIV_ADDRESS,
         // sender, nonce) and bumps the nonce within the same call —
         // mirror that ordering here.
         let sender = self.address(signer_idx);
         let entity_nonce = self.entity_nonces[signer_idx];
-        let key = compute_entity_key(self.chain_id, ENTITY_REGISTRY_ADDRESS, sender, entity_nonce);
+        let key = compute_entity_key(self.chain_id, ARKIV_ADDRESS, sender, entity_nonce);
 
         let attrs = build_attributes(&op.string_attrs, &op.numeric_attrs, &op.entity_key_attrs);
         let abi_op = Operation {
@@ -475,7 +475,7 @@ where
 
         let tx_req = TransactionRequest {
             from: Some(signer.address()),
-            to: Some(TxKind::Call(ENTITY_REGISTRY_ADDRESS)),
+            to: Some(TxKind::Call(ARKIV_ADDRESS)),
             input: TransactionInput::new(calldata.into()),
             nonce: Some(nonce),
             gas: Some(DEFAULT_GAS),
@@ -603,12 +603,13 @@ fn pack_ident32(s: &str) -> FixedBytes<32> {
     FixedBytes::from(buf)
 }
 
-/// `keccak256(abi.encodePacked(chainId, registry, sender, nonce))` —
-/// the same formula `EntityRegistry.entityKey(...)` uses.
-fn compute_entity_key(chain_id: u64, registry: Address, sender: Address, nonce: u32) -> B256 {
+/// `keccak256(abi.encodePacked(chainId, ARKIV_ADDRESS, sender, nonce))` —
+/// the same formula the precompile uses, and the same one the SDK runs
+/// locally to predict the key before submitting.
+fn compute_entity_key(chain_id: u64, arkiv_addr: Address, sender: Address, nonce: u32) -> B256 {
     let mut buf = Vec::with_capacity(32 + 20 + 20 + 4);
     buf.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
-    buf.extend_from_slice(registry.as_slice());
+    buf.extend_from_slice(arkiv_addr.as_slice());
     buf.extend_from_slice(sender.as_slice());
     buf.extend_from_slice(&nonce.to_be_bytes());
     keccak256(&buf)

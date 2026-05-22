@@ -640,25 +640,25 @@ fn resolve_payload(payload: Option<&str>, size: Option<usize>) -> Result<Bytes> 
 /// genesis JSON.
 ///
 /// Merges [`arkiv_genesis::genesis_alloc`] into the alloc:
-///   - the `EntityRegistry` predeploy at `0x44…0044`,
-///   - the system account at `0x44…0046` (nonce=1, no code),
+///   - the Arkiv predeploy at `0x44…0044` (nonce=1, no code) — this is
+///     both the SDK target and the precompile's state account,
 ///   - the [`arkiv_genesis::ARKIV_DEV_ACCOUNT_COUNT`] mnemonic-derived
 ///     dev accounts, each prefunded with [`arkiv_genesis::arkiv_dev_balance_wei`].
 ///
 /// Output is pretty-printed back to disk (overwriting the input by
 /// default, or to `out` if specified).
 fn inject_predeploy(input: &std::path::Path, out: Option<&std::path::Path>) -> Result<()> {
-    use arkiv_genesis::{ENTITY_REGISTRY_ADDRESS, SYSTEM_ACCOUNT_ADDRESS, genesis_alloc};
+    use arkiv_genesis::{SYSTEM_ACCOUNT_ADDRESS, genesis_alloc};
 
     let raw = std::fs::read_to_string(input)
         .map_err(|e| eyre::eyre!("failed to read {}: {}", input.display(), e))?;
     let mut genesis: arkiv_genesis::Genesis = serde_json::from_str(&raw)
         .map_err(|e| eyre::eyre!("failed to parse {} as genesis JSON: {}", input.display(), e))?;
 
-    for addr in [ENTITY_REGISTRY_ADDRESS, SYSTEM_ACCOUNT_ADDRESS] {
-        if genesis.alloc.contains_key(&addr) {
-            eprintln!("warning: alloc already contains an entry at {addr}; overwriting");
-        }
+    if genesis.alloc.contains_key(&SYSTEM_ACCOUNT_ADDRESS) {
+        eprintln!(
+            "warning: alloc already contains an entry at {SYSTEM_ACCOUNT_ADDRESS}; overwriting"
+        );
     }
 
     let arkiv_alloc = genesis_alloc()?;
@@ -673,8 +673,8 @@ fn inject_predeploy(input: &std::path::Path, out: Option<&std::path::Path>) -> R
         .map_err(|e| eyre::eyre!("failed to write {}: {}", dest.display(), e))?;
 
     eprintln!(
-        "injected EntityRegistry + system-account predeploys + {} dev accounts into {}",
-        account_count - 2,
+        "injected Arkiv system account + {} dev accounts into {}",
+        account_count - 1,
         dest.display(),
     );
     Ok(())

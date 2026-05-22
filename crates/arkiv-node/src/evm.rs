@@ -71,14 +71,16 @@ use reth_optimism_node::{
 use reth_optimism_primitives::{OpBlock, OpPrimitives};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 
-use crate::precompile::{arkiv_precompile, ARKIV_PRECOMPILE_ADDRESS};
+use arkiv_genesis::ARKIV_ADDRESS;
+
+use crate::precompile::arkiv_precompile;
 
 // ─────────────────────────────────────────────────────────────────────
 // ArkivOpEvmFactory — wraps OpEvmFactory<OpTx>; installs the precompile
 // ─────────────────────────────────────────────────────────────────────
 
 /// EVM factory that defers to the default OP factory and inserts the
-/// Arkiv precompile at [`ARKIV_PRECOMPILE_ADDRESS`] on every fresh EVM
+/// Arkiv precompile at [`ARKIV_ADDRESS`] on every fresh EVM
 /// (both canonical execution and inspector-instrumented contexts).
 #[derive(Debug, Clone, Default)]
 pub struct ArkivOpEvmFactory {
@@ -96,7 +98,7 @@ impl ArkivOpEvmFactory {
     {
         let precompile = arkiv_precompile();
         evm.precompiles_mut()
-            .apply_precompile(&ARKIV_PRECOMPILE_ADDRESS, |_existing| Some(precompile));
+            .apply_precompile(&ARKIV_ADDRESS, |_existing| Some(precompile));
     }
 }
 

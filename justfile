@@ -1,7 +1,7 @@
-registry := "0x4400000000000000000000000000000000000044"
-dev_key  := "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-dev_addr := "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-rpc      := "http://localhost:8545"
+arkiv_address := "0x4400000000000000000000000000000000000044"
+dev_key       := "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+dev_addr      := "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+rpc           := "http://localhost:8545"
 arkiv_node := env_var_or_default("ARKIV_NODE", "cargo run -p arkiv-node --")
 arkiv_cli  := env_var_or_default("ARKIV_CLI", "cargo run -p arkiv-cli --")
 
@@ -30,21 +30,6 @@ lint:
 # Format the workspace
 fmt:
     cargo fmt --all
-
-# ── Contracts ────────────────────────────────────────────────
-
-# Compile the Solidity sources in contracts/ and refresh the runtime
-# artifact at contracts/artifacts/EntityRegistry.runtime.hex. arkiv-genesis
-# reads that file via `include_str!`, so re-run this after editing
-# contracts/src/*.sol.
-contracts-build:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd contracts
-    forge build
-    jq -r '.deployedBytecode.object' out/EntityRegistry.sol/EntityRegistry.json \
-        > artifacts/EntityRegistry.runtime.hex
-    echo "wrote contracts/artifacts/EntityRegistry.runtime.hex ($(wc -c < artifacts/EntityRegistry.runtime.hex) bytes)"
 
 # ── Node ─────────────────────────────────────────────────────
 
@@ -77,7 +62,7 @@ node-dev *args='':
     {{ arkiv_node }} init --chain "$GENESIS" --datadir "$DATADIR"
     echo "datadir: $DATADIR"
     echo "genesis: $GENESIS"
-    echo "registry: {{ registry }}"
+    echo "arkiv address: {{ arkiv_address }}"
     echo "dev account: {{ dev_addr }}"
     {{ arkiv_node }} node \
         --chain "$GENESIS" \
@@ -127,9 +112,7 @@ delete key:
 expire key:
     {{ arkiv_cli }} expire --key {{ key }}
 
-# Read an entity commitment from the EntityRegistry contract (on-chain).
-# NOTE: Post-Phase-1 the contract still has commitments but the rolling
-# changeset-hash machinery is going away in v2; this still works for now.
+# Read an entity commitment via arkiv_cli query.
 commitment key:
     {{ arkiv_cli }} query --key {{ key }}
 
@@ -161,24 +144,7 @@ profile-create:
     @echo "trace: {{ tmp_dir }}/arkiv.create.trace.json"
     @echo "load:  https://ui.perfetto.dev"
 
-# Same workload as `profile-create` but txs target the precompile
-# address directly, bypassing EntityRegistry.execute. The median
-# difference against `profile-create` is the wall-clock cost the
-# contract adds — useful for sizing the "drop the contract" proposal.
-profile-create-precompile:
-    cargo test --test profile_create_op_direct_precompile -p arkiv-node -- --nocapture
-    @echo
-    @echo "trace: {{ tmp_dir }}/arkiv.create.precompile.trace.json"
-
-# Run both and print medians back-to-back for direct comparison.
-profile-create-compare: profile-create profile-create-precompile
-
 # ── Dev Helpers ──────────────────────────────────────────────
-
-# Verify EntityRegistry is deployed (requires running node)
-verify-registry:
-    @cast code {{ registry }} --rpc-url {{ rpc }} | head -c 80
-    @echo "..."
 
 # Check dev account balance via cast
 verify-balance:

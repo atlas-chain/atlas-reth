@@ -72,6 +72,16 @@ pub fn pair_address(annot_key: &[u8], annot_val: &[u8]) -> Address {
     Address::from_slice(&keccak256(buf).0[..20])
 }
 
+/// Index-account address. Spec: `index_address(k) =
+/// keccak256("arkiv.index" || k)[:20]` (range-query-proposal §2).
+/// Namespace is disjoint from `"arkiv.pair"`.
+pub fn index_address(attr_key: &[u8]) -> Address {
+    let mut buf = Vec::with_capacity(b"arkiv.index".len() + attr_key.len());
+    buf.extend_from_slice(b"arkiv.index");
+    buf.extend_from_slice(attr_key);
+    Address::from_slice(&keccak256(buf).0[..20])
+}
+
 // ─── Built-in annotation keys ─────────────────────────────────────────
 //
 // Every entity carries these implicit pairs in addition to its
@@ -254,6 +264,15 @@ impl FromIterator<u64> for Bitmap {
         Self(RoaringTreemap::from_iter(iter))
     }
 }
+
+// ─── IndexTree (Tier-2 ordered value set) ─────────────────────────────
+
+mod index_tree;
+/// Adaptive Radix Tree ordered set of attribute values for a single
+/// attribute key, stored in an **index account** at [`index_address`].
+/// Provides O(log n) insert/remove, prefix-compressed deterministic
+/// serialisation, and ascending range/prefix iteration.
+pub use index_tree::IndexTree;
 
 // ─── Entity RLP ───────────────────────────────────────────────────────
 
@@ -641,8 +660,15 @@ fn insert_into_pair_bitmap<S: StateAdapter>(
     entity_id: u64,
 ) -> Result<()> {
     let mut bitmap = read_pair_bitmap(state, annot_key, annot_val)?;
+    let was_empty = bitmap.is_empty();
     bitmap.insert(entity_id);
     state.set_code(&pair_address(annot_key, annot_val), bitmap.to_bytes())?;
+    // Tier-2: insert the value into the index tree on first use of this pair.
+    if was_empty {
+        let mut tree = read_index_tree(state, annot_key)?;
+        tree.insert(annot_val.to_vec());
+        state.set_code(&index_address(annot_key), tree.to_bytes())?;
+    }
     Ok(())
 }
 
@@ -660,6 +686,17 @@ fn remove_from_pair_bitmap<S: StateAdapter>(
     }
     bitmap.remove(entity_id);
     state.set_code(&pair_address(annot_key, annot_val), bitmap.to_bytes())?;
+    // Tier-2: remove the value from the index tree when the last entity
+    // using this pair is gone.
+    if bitmap.is_empty() {
+        let mut tree = read_index_tree(state, annot_key)?;
+        tree.remove(annot_val);
+        if tree.is_empty() {
+            state.tombstone_code(&index_address(annot_key))?;
+        } else {
+            state.set_code(&index_address(annot_key), tree.to_bytes())?;
+        }
+    }
     Ok(())
 }
 
@@ -686,6 +723,17 @@ pub fn read_pair_bitmap<S: StateAdapter>(
 /// Convenience wrapper around [`read_pair_bitmap`].
 pub fn all_entities<S: StateAdapter>(state: &mut S) -> Result<Bitmap> {
     read_pair_bitmap(state, ANNOT_ALL, b"")
+}
+
+/// Read the Tier-2 [`IndexTree`] for `attr_key`. An absent or
+/// tombstoned index account decodes to an empty tree — not an error.
+pub fn read_index_tree<S: StateAdapter>(state: &mut S, attr_key: &[u8]) -> Result<IndexTree> {
+    let code = state.code(&index_address(attr_key))?;
+    if code.is_empty() {
+        Ok(IndexTree::new())
+    } else {
+        IndexTree::from_bytes(&code)
+    }
 }
 
 /// Resolve a query-hit entity ID to its on-trie [`EntityRlp`].
@@ -1095,6 +1143,105 @@ mod tests {
         let acc = db.account(&entity_addr).expect("entity acc still exists");
         assert!(acc.code.is_empty());
         assert_eq!(acc.nonce, 1);
+    }
+
+    // ─── IndexTree ───────────────────────────────────────────────────
+
+    fn read_art_raw(db: &InMemoryStateDb, attr_key: &[u8]) -> IndexTree {
+        let addr = index_address(attr_key);
+        let code = db.account(&addr).map(|a| a.code.clone()).unwrap_or_default();
+        if code.is_empty() {
+            IndexTree::new()
+        } else {
+            IndexTree::from_bytes(&code).expect("decode IndexTree")
+        }
+    }
+
+    #[test]
+    fn index_tree_round_trip() {
+        let mut tree = IndexTree::new();
+        tree.insert(b"apple".to_vec());
+        tree.insert(b"banana".to_vec());
+        tree.insert(b"cherry".to_vec());
+        let decoded = IndexTree::from_bytes(&tree.to_bytes()).expect("decode");
+        let vals: Vec<Vec<u8>> = decoded.iter_gte(b"").collect();
+        assert_eq!(vals, [b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]);
+    }
+
+    #[test]
+    fn index_tree_serialization_is_deterministic() {
+        let vals = [b"z".to_vec(), b"a".to_vec(), b"m".to_vec()];
+        let mut a = IndexTree::new();
+        let mut b = IndexTree::new();
+        for v in &vals {
+            a.insert(v.clone());
+        }
+        for v in vals.iter().rev() {
+            b.insert(v.clone());
+        }
+        assert_eq!(a.to_bytes(), b.to_bytes());
+    }
+
+    #[test]
+    fn index_tree_range_and_prefix_ops() {
+        let mut tree = IndexTree::new();
+        for v in [b"aaa", b"aab", b"abc", b"bbb", b"ccc"] {
+            tree.insert(v.to_vec());
+        }
+        let gt: Vec<Vec<u8>> = tree.iter_gt(b"aab").collect();
+        assert_eq!(gt, [b"abc".to_vec(), b"bbb".to_vec(), b"ccc".to_vec()]);
+
+        let lte: Vec<Vec<u8>> = tree.iter_lte(b"aab").collect();
+        assert_eq!(lte, [b"aaa".to_vec(), b"aab".to_vec()]);
+
+        let prefix: Vec<Vec<u8>> = tree.iter_prefix(b"aa").collect();
+        assert_eq!(prefix, [b"aaa".to_vec(), b"aab".to_vec()]);
+    }
+
+    #[test]
+    fn insert_pair_bitmap_writes_index_on_first_entity() {
+        let mut db = fresh_db();
+        let val = b"hello".to_vec();
+        {
+            let mut state = InMemoryAdapter::new(&mut db);
+            insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
+        }
+        let tree = read_art_raw(&db, b"tag");
+        let vals: Vec<Vec<u8>> = tree.iter_gte(b"").collect();
+        assert_eq!(vals, [b"hello".to_vec()], "index should contain value after first entity");
+
+        // Second insert of same value — bitmap was non-empty, ART unchanged.
+        {
+            let mut state = InMemoryAdapter::new(&mut db);
+            insert_into_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
+        }
+        let tree2 = read_art_raw(&db, b"tag");
+        assert_eq!(tree2.iter_gte(b"").count(), 1);
+    }
+
+    #[test]
+    fn remove_pair_bitmap_removes_index_on_last_entity() {
+        let mut db = fresh_db();
+        let val = b"hello".to_vec();
+        {
+            let mut state = InMemoryAdapter::new(&mut db);
+            insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
+            insert_into_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
+        }
+
+        // Remove first entity — bitmap still has entity 1, ART unchanged.
+        {
+            let mut state = InMemoryAdapter::new(&mut db);
+            remove_from_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
+        }
+        assert!(!read_art_raw(&db, b"tag").is_empty(), "index should survive while entity 1 remains");
+
+        // Remove last entity — bitmap is now empty, index account tombstoned.
+        {
+            let mut state = InMemoryAdapter::new(&mut db);
+            remove_from_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
+        }
+        assert!(read_art_raw(&db, b"tag").is_empty(), "index should be empty after last entity removed");
     }
 
     #[test]

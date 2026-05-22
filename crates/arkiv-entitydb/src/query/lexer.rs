@@ -1,8 +1,8 @@
 //! Hand-rolled lexer for the Arkiv query language.
 //!
-//! Grammar tokens (Phase 10a — no range / glob / `$sequence`):
+//! Grammar tokens:
 //!
-//! - operators: `(`, `)`, `&&`, `||`, `=`, `!=`, `*`
+//! - operators: `(`, `)`, `&&`, `||`, `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`, `!~`, `*`
 //! - keywords (case-insensitive): `AND`, `OR`, `NOT`, `IN`
 //! - built-in idents: `$all`, `$owner`, `$creator`, `$key`, `$expiration`,
 //!   `$contentType`, `$createdAtBlock`
@@ -27,6 +27,14 @@ pub enum Token {
     Not,
     In,
     Star,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    /// `~` — prefix/glob match operator.
+    Tilde,
+    /// `!~` — negated prefix/glob match operator.
+    NotTilde,
 
     DollarAll,
     DollarOwner,
@@ -134,9 +142,36 @@ impl<'a> Lexer<'a> {
                 self.bump_char();
                 return Ok(Some(Token::Neq));
             }
+            if self.peek_char() == Some('~') {
+                self.bump_char();
+                return Ok(Some(Token::NotTilde));
+            }
             // Bare `!` is treated as the NOT keyword for ergonomic
             // negation (`!(a = b)`).
             return Ok(Some(Token::Not));
+        }
+
+        if c == '>' {
+            self.bump_char();
+            if self.peek_char() == Some('=') {
+                self.bump_char();
+                return Ok(Some(Token::Gte));
+            }
+            return Ok(Some(Token::Gt));
+        }
+
+        if c == '<' {
+            self.bump_char();
+            if self.peek_char() == Some('=') {
+                self.bump_char();
+                return Ok(Some(Token::Lte));
+            }
+            return Ok(Some(Token::Lt));
+        }
+
+        if c == '~' {
+            self.bump_char();
+            return Ok(Some(Token::Tilde));
         }
 
         // String literal.

@@ -10,7 +10,7 @@ use alloy_primitives::{Address, B256, U256};
 use arkiv_entitydb::query::parse;
 use arkiv_entitydb::test_utils::{InMemoryAdapter, InMemoryStateDb};
 use arkiv_entitydb::{
-    NumericAnnotation, StringAnnotation, create, delete, resolve_id, transfer,
+    NumericAnnotation, StringAnnotation, create, delete, resolve_id, transfer, update,
 };
 
 fn alice() -> Address {
@@ -306,4 +306,217 @@ fn resolve_id_returns_none_after_delete() {
     create_simple(&mut s, alice(), key_n(1), b"text/plain", 100);
     delete(&mut s, key_n(1)).expect("delete");
     assert!(resolve_id(&mut s, 0).expect("resolve").is_none());
+}
+
+// ── Range and glob query tests ────────────────────────────────────────
+
+fn create_with_price(state: &mut InMemoryAdapter, owner: Address, key: B256, price: u64) {
+    create(
+        state,
+        owner,
+        key,
+        1000,
+        10,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![],
+        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(price) }],
+    )
+    .expect("create");
+}
+
+#[test]
+fn range_gt_returns_matching_entities() {
+    let mut db = fresh();
+    let mut s = InMemoryAdapter::new(&mut db);
+    create_with_price(&mut s, alice(), key_n(1), 50);
+    create_with_price(&mut s, alice(), key_n(2), 100);
+    create_with_price(&mut s, alice(), key_n(3), 200);
+    assert_eq!(ids(&mut s, "price > 100"), vec![2]);
+}
+
+#[test]
+fn range_lte_returns_matching_entities() {
+    let mut db = fresh();
+    let mut s = InMemoryAdapter::new(&mut db);
+    create_with_price(&mut s, alice(), key_n(1), 50);
+    create_with_price(&mut s, alice(), key_n(2), 100);
+    create_with_price(&mut s, alice(), key_n(3), 200);
+    assert_eq!(ids(&mut s, "price <= 100"), vec![0, 1]);
+}
+
+#[test]
+fn range_between_exclusive() {
+    let mut db = fresh();
+    let mut s = InMemoryAdapter::new(&mut db);
+    create_with_price(&mut s, alice(), key_n(1), 50);
+    create_with_price(&mut s, alice(), key_n(2), 100);
+    create_with_price(&mut s, alice(), key_n(3), 200);
+    create_with_price(&mut s, alice(), key_n(4), 500);
+    // Entity IDs: 0=price50, 1=price100, 2=price200, 3=price500
+    assert_eq!(ids(&mut s, "price > 100 && price < 500"), vec![2]);
+}
+
+#[test]
+fn range_and_equality_combined() {
+    let mut db = fresh();
+    let mut s = InMemoryAdapter::new(&mut db);
+    // id=0: image/png, price=20
+    create(
+        &mut s,
+        alice(),
+        key_n(1),
+        100,
+        10,
+        b"".to_vec(),
+        b"image/png".to_vec(),
+        vec![],
+        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(20) }],
+    )
+    .expect("create");
+    // id=1: text/plain, price=20
+    create(
+        &mut s,
+        alice(),
+        key_n(2),
+        100,
+        10,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![],
+        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(20) }],
+    )
+    .expect("create");
+    // id=2: image/png, price=5
+    create(
+        &mut s,
+        alice(),
+        key_n(3),
+        100,
+        10,
+        b"".to_vec(),
+        b"image/png".to_vec(),
+        vec![],
+        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(5) }],
+    )
+    .expect("create");
+    assert_eq!(ids(&mut s, r#"$contentType = "image/png" && price > 10"#), vec![0]);
+}
+
+#[test]
+fn glob_prefix_match() {
+    let mut db = fresh();
+    let mut s = InMemoryAdapter::new(&mut db);
+    create_simple(&mut s, alice(), key_n(1), b"image/png", 100);
+    create_simple(&mut s, alice(), key_n(2), b"image/jpeg", 100);
+    create_simple(&mut s, alice(), key_n(3), b"text/plain", 100);
+    assert_eq!(ids(&mut s, r#"$contentType ~ "image/*""#), vec![0, 1]);
+}
+
+#[test]
+fn not_glob_excludes_prefix() {
+    let mut db = fresh();
+    let mut s = InMemoryAdapter::new(&mut db);
+    create_simple(&mut s, alice(), key_n(1), b"image/png", 100);
+    create_simple(&mut s, alice(), key_n(2), b"image/jpeg", 100);
+    create_simple(&mut s, alice(), key_n(3), b"text/plain", 100);
+    assert_eq!(ids(&mut s, r#"$contentType !~ "image/*""#), vec![2]);
+}
+
+#[test]
+fn update_moves_index_value() {
+    let mut db = fresh();
+    let mut s = InMemoryAdapter::new(&mut db);
+    create(
+        &mut s,
+        alice(),
+        key_n(1),
+        1000,
+        10,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![],
+        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(100) }],
+    )
+    .expect("create");
+    update(
+        &mut s,
+        key_n(1),
+        20,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![],
+        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(200) }],
+    )
+    .expect("update");
+    assert_eq!(ids(&mut s, "price > 150"), vec![0]);
+    assert_eq!(ids(&mut s, "price < 150"), Vec::<u64>::new());
+}
+
+#[test]
+fn delete_removes_index_entry() {
+    let mut db = fresh();
+    let mut s = InMemoryAdapter::new(&mut db);
+    create(
+        &mut s,
+        alice(),
+        key_n(1),
+        1000,
+        10,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![],
+        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(42) }],
+    )
+    .expect("create");
+    assert_eq!(ids(&mut s, "price > 0"), vec![0]);
+    delete(&mut s, key_n(1)).expect("delete");
+    assert_eq!(ids(&mut s, "price > 0"), Vec::<u64>::new());
+}
+
+#[test]
+fn range_historical_query() {
+    // Simulate querying at two different block heights by using separate
+    // InMemoryStateDb snapshots. block-1 has price=100; block-2 has
+    // price=200 after an update.
+    let key = key_n(42);
+    let mut db_block1 = fresh();
+    {
+        let mut s = InMemoryAdapter::new(&mut db_block1);
+        create(
+            &mut s,
+            alice(),
+            key,
+            1000,
+            1,
+            b"".to_vec(),
+            b"text/plain".to_vec(),
+            vec![],
+            vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(100) }],
+        )
+        .expect("create");
+    }
+
+    let mut db_block2 = db_block1.clone();
+    {
+        let mut s = InMemoryAdapter::new(&mut db_block2);
+        update(
+            &mut s,
+            key,
+            2,
+            b"".to_vec(),
+            b"text/plain".to_vec(),
+            vec![],
+            vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(200) }],
+        )
+        .expect("update");
+    }
+
+    // At block 1: price=100, so price > 150 matches nothing.
+    let mut s1 = InMemoryAdapter::new(&mut db_block1);
+    assert_eq!(ids(&mut s1, "price > 150"), Vec::<u64>::new());
+
+    // At block 2: price=200, so price > 150 matches entity 0.
+    let mut s2 = InMemoryAdapter::new(&mut db_block2);
+    assert_eq!(ids(&mut s2, "price > 150"), vec![0]);
 }

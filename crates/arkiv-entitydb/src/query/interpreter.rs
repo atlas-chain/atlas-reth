@@ -18,7 +18,7 @@
 use eyre::Result;
 
 use super::parser::{AnnotKey, AnnotVal, Query, parse};
-use crate::{Bitmap, EntityRlp, StateAdapter, all_entities, read_pair_bitmap, resolve_id};
+use crate::{Bitmap, EntityRlp, StateAdapter, all_entities, read_index_tree, read_pair_bitmap, resolve_id};
 
 impl Query {
     /// Evaluate the AST against `state`, returning the bitmap of
@@ -68,6 +68,58 @@ fn eval<S: StateAdapter>(query: &Query, state: &mut S) -> Result<Bitmap> {
         Query::Not(inner) => {
             let mut all = all_entities(state)?;
             let hit = eval(inner, state)?;
+            all.subtract(&hit);
+            Ok(all)
+        }
+
+        Query::Gt { key, value } => {
+            let attr_key = key.pair_key_bytes();
+            let tree = read_index_tree(state, attr_key)?;
+            let mut result = Bitmap::new();
+            for val in tree.iter_gt(&value.0) {
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
+            }
+            Ok(result)
+        }
+        Query::Gte { key, value } => {
+            let attr_key = key.pair_key_bytes();
+            let tree = read_index_tree(state, attr_key)?;
+            let mut result = Bitmap::new();
+            for val in tree.iter_gte(&value.0) {
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
+            }
+            Ok(result)
+        }
+        Query::Lt { key, value } => {
+            let attr_key = key.pair_key_bytes();
+            let tree = read_index_tree(state, attr_key)?;
+            let mut result = Bitmap::new();
+            for val in tree.iter_lt(&value.0) {
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
+            }
+            Ok(result)
+        }
+        Query::Lte { key, value } => {
+            let attr_key = key.pair_key_bytes();
+            let tree = read_index_tree(state, attr_key)?;
+            let mut result = Bitmap::new();
+            for val in tree.iter_lte(&value.0) {
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
+            }
+            Ok(result)
+        }
+        Query::Glob { key, value } => {
+            let attr_key = key.pair_key_bytes();
+            let tree = read_index_tree(state, attr_key)?;
+            let mut result = Bitmap::new();
+            for val in tree.iter_prefix(&value.0) {
+                result.union_with(&read_pair_bitmap(state, attr_key, &val)?);
+            }
+            Ok(result)
+        }
+        Query::NotGlob { key, value } => {
+            let mut all = all_entities(state)?;
+            let hit = eval(&Query::Glob { key: key.clone(), value: value.clone() }, state)?;
             all.subtract(&hit);
             Ok(all)
         }

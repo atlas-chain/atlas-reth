@@ -13,9 +13,8 @@ cross-references; it does not duplicate.
 
 ## 1. What this software does
 
-`arkiv-op-reth` is an [op-reth](https://github.com/ethereum-optimism/optimism)
-fork that turns an OP-stack L2/L3 node into an **Arkiv** node by adding
-three things:
+`arkiv-op-reth` builds on [op-reth](https://github.com/ethereum-optimism/optimism)
+to turn an OP-stack L2/L3 node into an **Arkiv** node by adding three things:
 
 1. Two predeploys: `EntityRegistry` at
    `0x4400000000000000000000000000000000000044` and a singleton system
@@ -106,11 +105,13 @@ binary still ships the old bytes.
 
 ### 3.2 `arkiv-entitydb`
 
-Canonical home of the v2 state model. No `revm` deps, no DB deps —
+Canonical home of the state model. No `revm` deps, no DB deps —
 runs against an abstract `StateAdapter` trait. Contains:
 
-- **Primitives.** `EntityRlp`, `Bitmap` (roaring64), `entity_address`,
-  `pair_address`, built-in annotation keys, system-account slot keys.
+- **Primitives.** `EntityRlp`, `Bitmap` (roaring64), `IndexTree`
+  (Adaptive Radix Tree over annotation values), `entity_address`,
+  `pair_address`, `index_address`, built-in annotation keys,
+  system-account slot keys.
 - **`StateAdapter` trait.** `code` / `set_code` / `tombstone_code` /
   `storage` / `set_storage`. Implemented in production by
   `RevmStateAdapter` (precompile path, journaled writes) and
@@ -119,8 +120,8 @@ runs against an abstract `StateAdapter` trait. Contains:
   unit tests.
 - **Op handlers.** `create` / `update` / `extend` / `transfer` /
   `delete` / `expire`. All indexing logic (system counter, ID maps,
-  bitmap deltas across built-in and user annotations, RLP
-  encode/decode, tombstoning) lives here.
+  Tier-1 bitmap deltas and Tier-2 ART deltas across built-in and
+  user annotations, RLP encode/decode, tombstoning) lives here.
 - **Query language.** Lexer (hand-rolled), recursive-descent parser
   producing a `Query` AST, tree-walking interpreter that runs against
   a `StateAdapter` and returns a roaring64 `Bitmap` of matching
@@ -196,7 +197,7 @@ construct.
 The canonical state-model spec is in
 [`statedb-design.md`](statedb-design.md). A one-paragraph summary:
 
-Three kinds of Ethereum account hold Arkiv state in the trie.
+Four kinds of Ethereum account hold Arkiv state in the trie.
 **Entity accounts** (one per entity, address = `entityKey[:20]`) hold
 the RLP-encoded entity payload + annotation set in `codeHash`,
 prefixed with `0xFE` so a `CALL` reverts immediately. **Pair accounts**
@@ -204,7 +205,12 @@ prefixed with `0xFE` so a `CALL` reverts immediately. **Pair accounts**
 `keccak256("arkiv.pair" || k || 0x00 || v)[:20]`) hold a roaring64
 bitmap of matching entity IDs as the account's code; `codeHash` is the
 keccak hash of the bitmap bytes, so **every bitmap is
-content-addressed in the trie**. A singleton **system account** at
+content-addressed in the trie**. **Index accounts** (one per
+`annot_key` with at least one live value, address =
+`keccak256("arkiv.index" || k)[:20]`) hold a serialised Adaptive
+Radix Tree over the set of live values for that key — the Tier-2
+ordered enumeration that backs range and prefix-glob queries; again
+content-addressed via `codeHash`. A singleton **system account** at
 `0x4400…0046` holds the global entity counter (`entity_count`) and
 both directions of the ID ↔ address map. The `EntityRegistry`
 contract holds per-entity `(owner, expiresAt)` and a sender-scoped
@@ -227,16 +233,18 @@ calldata, updates its `(owner, expiresAt)` records, emits
   accounting.
 - Performs every consensus-critical write through revm's journaled
   state via `EvmInternals`: entity-account create + `SetCode`,
-  pair-account create + bitmap `SetCode`, system-account `SetState`
-  for `entity_count` and the ID maps.
+  pair-account create + bitmap `SetCode`, index-account `SetCode`
+  (Tier-2 ART maintained alongside the pair bitmap), system-account
+  `SetState` for `entity_count` and the ID maps.
 
 The op dispatch itself lives in `arkiv-entitydb`. The precompile is a
 revm-side adapter over an abstract `StateAdapter`.
 
 Determinism is by construction: gas is pure-function-of-calldata,
 state writes are pure-function-of-`(op-batch, prior-trie-state)`, and
-the same `EvmFactory` is used by sequencer, validator, and the
-fault-proof program — all three execute identically.
+the same `EvmFactory` runs in the sequencer and the validator. Once a
+Rust-based fault-proof program (`kona` on `asterisc`) is wired up,
+replay there executes identically; see §10.
 
 ---
 
@@ -260,22 +268,23 @@ Implemented today:
 - Top-level: `*` and `$all` (every live entity).
 - Equality and inequality: `k = v`, `k != v`.
 - Inclusion: `k IN (v1 v2 …)`, `k NOT IN (…)`.
+- Range: `k < v`, `k <= v`, `k > v`, `k >= v`.
+- Prefix-glob: `k ~ "prefix*"`, `k !~ "prefix*"`.
 - Boolean combinators: `&&` / `AND`, `||` / `OR`, `NOT (…)`, `!(…)`.
 - Built-ins: `$owner`, `$creator`, `$key`, `$expiration`,
   `$contentType`, `$createdAtBlock`.
 - Value literals: hex addresses (`0x…40hex`), entity keys (`0x…64hex`,
   optionally quoted), decimal numbers, double-quoted strings.
 
+Range and prefix-glob evaluate against the Tier-2 ART index account
+for the queried key (`keccak256("arkiv.index" || k)[:20]`). The
+glob operator is **prefix-only** — mid-pattern wildcards
+(`"img/*/large"`) are not supported.
+
 **Not implemented:**
 
-- Range queries (`<`, `<=`, `>`, `>=`).
-- Glob queries (`~`, `!~`).
 - `$sequence` built-in.
-
-Range and glob both need an ordered enumeration over `(annot_key,
-annot_val)` pairs — the trie's hashed pair addresses preclude that.
-An ordered sibling index (MDBX or similar) would unblock them; that
-work isn't built yet.
+- Arbitrary-pattern glob (only prefix-glob).
 
 ### 6.2 Historical reads
 
@@ -375,9 +384,6 @@ bring-up. `nonce=1` defeats EIP-161 pruning.
 | Precompile unit tests | `crates/arkiv-node/src/precompile.rs` — ABI round-trip, gas constants, attribute conversion. |
 | Full pipeline e2e | `e2e/tests/full_pipeline_e2e.rs` — boots an in-process `ArkivOpNode`, walks every op type + every query construct + atBlock + pagination + non-owner revert. |
 
-The matrix that v1 used (manual `just node-dev-jsonrpc` + `just batch`
-+ mock-entitydb output) is gone with the JSON-RPC bridge.
-
 ---
 
 ## 9. Key design decisions, recapped
@@ -408,20 +414,20 @@ The matrix that v1 used (manual `just node-dev-jsonrpc` + `just batch`
 - **Mainnet predeploy registration in `L2Genesis.s.sol`.** The
   cleanest long-term home for the predeploys. Not pursued yet; the
   post-process approach has a tinier surface we own.
-- **Range / glob queries.** Need an ordered sibling index over
-  `(annot_key, annot_val)` pairs. The trie's hashed pair addresses
-  preclude in-trie range scans. Future work.
+- **Arbitrary-pattern glob.** `~` accepts prefix patterns only —
+  mid-pattern wildcards and `?` would need a full ART scan rather
+  than `iter_prefix`. Not on the critical path.
 - **Per-op tx-position metadata.** `transaction_index_in_block` and
   `operation_index_in_transaction` are kept in the wire shape for SDK
   parity but always 0 — revm's precompile context doesn't expose
   either.
 - **L1 / op-node / op-batcher / op-proposer.** Out of scope. This
   repo is the L3 execution client only.
-- **Fault-proof EVM integration verification.** The design relies on
-  `op-program` / `cannon` / `op-challenger` picking up our custom
-  `EvmFactory` through whatever shared crate dependency they use; if
-  they bypass `OpNode` and instantiate `OpEvmFactory<OpTx>` directly
-  they'll miss the precompile. Tracked as an investigation item.
+- **Fault-proof EVM integration.** The expected path is `kona`
+  (Rust FP program) on `asterisc` (RISC-V VM), where
+  `arkiv-entitydb` and the Arkiv precompile compile in directly via
+  the shared reth crates. Wiring and end-to-end verification are
+  tracked as an investigation item.
 
 ---
 

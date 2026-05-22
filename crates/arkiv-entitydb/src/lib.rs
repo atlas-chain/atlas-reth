@@ -73,8 +73,8 @@ pub fn pair_address(annot_key: &[u8], annot_val: &[u8]) -> Address {
 }
 
 /// Index-account address. Spec: `index_address(k) =
-/// keccak256("arkiv.index" || k)[:20]` (range-query-proposal §2).
-/// Namespace is disjoint from `"arkiv.pair"`.
+/// keccak256("arkiv.index" || k)[:20]` (statedb-design §2, Index
+/// Accounts). Namespace is disjoint from `"arkiv.pair"`.
 pub fn index_address(attr_key: &[u8]) -> Address {
     let mut buf = Vec::with_capacity(b"arkiv.index".len() + attr_key.len());
     buf.extend_from_slice(b"arkiv.index");

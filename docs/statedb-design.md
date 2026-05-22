@@ -13,6 +13,7 @@
   - [Entity Accounts](#entity-accounts)
   - [System Account](#system-account)
   - [Pair Accounts (Content-Addressed Bitmaps)](#pair-accounts-content-addressed-bitmaps)
+  - [Index Accounts (Tier-2 ART)](#index-accounts-tier-2-art)
   - [Why Numerical IDs](#why-numerical-ids)
 - [3. Lifecycle](#3-lifecycle)
   - [Create](#create)
@@ -24,7 +25,7 @@
 - [4. Query Execution](#4-query-execution)
   - [Equality, Inclusion, Boolean](#equality-inclusion-boolean)
   - [Historical Queries](#historical-queries)
-  - [Range / Glob (not yet implemented)](#range--glob-not-yet-implemented)
+  - [Range and Prefix-Glob](#range-and-prefix-glob)
   - [Query Completeness Proofs](#query-completeness-proofs)
 - [5. Gas Model](#5-gas-model)
 - [6. Reorg Handling](#6-reorg-handling)
@@ -36,59 +37,50 @@
 
 ## Abstract
 
-This document describes the Arkiv storage design for op-reth. **All
-state** used to serve entity reads and annotation queries lives in
-op-reth's world-state trie, committed in the L3 `stateRoot`. There is
-no separate EntityDB process, no JSON-RPC bridge between subsystems,
-no private `arkiv_stateRoot`, no anchoring submission transaction, no
-ExEx, and no out-of-trie KV table.
+This document describes the Arkiv storage design for op-reth. All
+state used to serve entity reads and annotation queries lives in
+op-reth's world-state trie, committed in the L3 `stateRoot`.
 
-Entities and the annotation index are expressed as Ethereum accounts.
-Each entity is a dedicated account whose payload, content type, full
-key, and annotation set are RLP-encoded and held as account `code`.
-Each `(annotKey, annotVal)` pair is itself a dedicated account whose
-code is the roaring64 bitmap of entity IDs matching that pair; the
-account's `codeHash` is the keccak hash of those bytes by
-construction, so **every bitmap is content-addressed in the trie**. A
-singleton system account holds the global entity counter and the
-trie-committed ID ↔ address map.
+**The fundamental building block is the same one Ethereum uses for
+smart-contract code: store arbitrary bytes in an account's `code`,
+and let `codeHash = keccak256(code)` content-address them in the
+trie.** Arkiv applies this technique to three kinds of data:
 
-The contract entry point — `EntityRegistry` — holds per-entity
-`(owner, expiresAt)` tuples and is responsible for ownership,
-expiration, and `Ident32` charset validation. It mints entity keys,
-enforces who can mutate what, dispatches to the precompile, and emits
-per-op logs. The Arkiv precompile is the revm-side adapter that
-decodes the calldata, charges gas, and dispatches into
-`arkiv-entitydb`, which owns the indexing logic (system counter, ID
-maps, bitmap deltas, RLP encode/decode).
+- **Entity content.** One account per entity; `code` is the
+  RLP-encoded entity (payload, content type, owner, expiry,
+  annotations, full key, creation block).
+- **Tier-1 equality index.** One account per `(annotKey, annotVal)`
+  ever seen; `code` is a roaring64 bitmap of entity IDs that match
+  the pair.
+- **Tier-2 ordered index.** One account per `annotKey` with at least
+  one live value; `code` is a serialised Adaptive Radix Tree (ART)
+  over the set of values currently in use, supplying the ordered
+  enumeration that backs range and prefix-glob queries.
 
-Everything the precompile writes goes through revm's journaled state.
-Op-reth's standard tables and standard reorg machinery handle every
-mutation without any Arkiv-specific extension.
+Because each kind of account is content-addressed via `codeHash`,
+every Arkiv read inherits the standard Ethereum guarantees for free:
+the bytes are committed in `stateRoot`, clients can prove authenticity
+with `eth_getProof` + `eth_getCode`, and queries against any retained
+historical block resolve by routing reads through that block's state.
+
+The write path has three components. The **`EntityRegistry`
+contract** is the user-facing entry point: it validates each op batch
+(ownership, liveness, attribute names) and dispatches to the **Arkiv
+precompile**. The precompile is the bridge between the contract and
+**`arkiv-entitydb`**: it charges gas as a pure function of calldata,
+then dispatches into the entitydb crate, which owns the indexing
+logic.
 
 **What this design provides:**
 
-- Verifiable entity payloads via standard `eth_getProof` against the
-  L3 `stateRoot`. One-level proof; no anchor proof.
-- Verifiable query results for the equality family. Every bitmap is
-  content-addressed in the trie (`codeHash = keccak256(bitmap_bytes)`)
-  and every ID → entity-address mapping is a trie-committed
-  system-account slot. A client can verify each bitmap individually
-  against its `codeHash`, re-execute the query logic locally (AND /
-  OR / NOT), and check that the server's result matches.
-- A natural "raw bitmap" RPC mode: clients can fetch matching bitmaps
-  via `eth_getCode`, verify each against the proof, AND/OR them
-  locally, resolve IDs through the system-account map, then fetch
-  entity RLPs in a second step.
-- Historical reads for every entity at every retained block, and
-  historical queries against any retained `stateRoot`.
-- Full Optimism fault-proof coverage of all consensus-critical Arkiv
-  state.
-- Single-process deployment with zero custom MDBX tables.
-
-Range and glob queries are **not yet implemented** — they need an
-ordered enumeration over `(annot_key, annot_val)` pairs that the
-trie's hashed pair addresses preclude. §4 covers the limitation.
+- Verifiable reads. Entity payloads and equality / range /
+  prefix-glob query results are provable against the L3 `stateRoot`
+  via standard `eth_getProof` + `eth_getCode`.
+- Client-side query evaluation. Clients can fetch raw bitmaps and
+  ARTs, verify each against the proof, and combine them locally
+  instead of trusting the server's result.
+- Historical reads at every retained block, including queries
+  against past `stateRoot`s.
 
 ---
 
@@ -107,14 +99,15 @@ Three components inside `arkiv-op-reth`:
    calldata decode, gas accounting, dispatch into `arkiv-entitydb` via
    a `StateAdapter` impl over `EvmInternals`.
 3. The **`arkiv-entitydb` crate** — canonical home of the state
-   model. Owns the entity / pair / system layout, RLP, roaring
-   bitmap, the six op handlers, and the query language. No `revm`
-   deps; runs against an abstract `StateAdapter` trait.
+   model. Owns the entity / pair / system / index layout, RLP,
+   roaring bitmap, the ART index implementation, the six op
+   handlers, and the query language. No `revm` deps; runs against
+   an abstract `StateAdapter` trait.
 
 Every state-dependent mutation that affects consensus — entity
-account writes, pair account writes (bitmaps), system account writes
-— flows through revm's journaled state and is committed in the L3
-`stateRoot`.
+account writes, pair account writes (bitmaps), index account writes
+(serialised ART), system account writes — flows through revm's
+journaled state and is committed in the L3 `stateRoot`.
 
 ### Reth Integration
 
@@ -265,12 +258,13 @@ indexing math.
 
 ## 2. State Model
 
-All Arkiv state lives in three kinds of Ethereum accounts: entity
+All Arkiv state lives in four kinds of Ethereum accounts: entity
 accounts (one per entity), pair accounts (one per `(annotKey,
-annotVal)` ever seen — these hold the bitmaps), and the singleton
-system account. The `EntityRegistry` contract holds its own per-entity
-`(owner, expiresAt)` mapping plus the sender-scoped `nonces`. All in
-the trie, all committed in `stateRoot`.
+annotVal)` ever seen — these hold the bitmaps), index accounts (one
+per `annotKey` with at least one live value — these hold the ART), and
+the singleton system account. The `EntityRegistry` contract holds its
+own per-entity `(owner, expiresAt)` mapping plus the sender-scoped
+`nonces`. All in the trie, all committed in `stateRoot`.
 
 ### Entity Accounts
 
@@ -417,6 +411,81 @@ The 20-byte pair address is derivable directly from
 `(annotKey, annotVal)`, so equality queries can locate the bitmap
 without consulting any index.
 
+### Index Accounts (Tier-2 ART)
+
+One account per attribute key with at least one live value. The
+account's code is a serialised **Adaptive Radix Tree (ART)** over the
+set of `annotVal` bytes that currently appear in some live entity's
+annotations for that key. The ART supplies the ordered enumeration
+that equality bitmaps can't: range scans (`>`, `<`, `>=`, `<=`) walk
+keys in lex order; prefix-glob scans (`~`, `!~`) walk keys sharing a
+byte prefix.
+
+```
+Index Account  (address = keccak256("arkiv.index" || annotKey)[:20])
+  nonce    = 1
+  codeHash = keccak256(art_bytes)
+  code     = serialised ART bytes
+
+  storage slots: none
+```
+
+The `"arkiv.index"` prefix is disjoint from `"arkiv.pair"` so the two
+namespaces cannot collide. `codeHash` is the keccak hash of the
+serialised ART by construction, so **the index is content-addressed in
+the trie** for the same reason pair bitmaps are. Historical ART
+versions stay retrievable via `eth_getCode(index_address, blockN)`.
+
+The ART stores **values only** — it is an ordered set of `annotVal`
+bytes. The corresponding pair address is re-derivable as
+`keccak256("arkiv.pair" || k || 0x00 || v)[:20]` from each value the
+ART yields. The ART itself carries no entity IDs and no bitmap.
+
+#### What Gets Indexed
+
+Every `(annotKey, annotVal)` pair that the op handlers touch — both
+built-ins (`$all`, `$creator`, `$createdAtBlock`, `$owner`, `$key`,
+`$expiration`, `$contentType`) and user-supplied UINT / STRING /
+ENTITY_KEY attributes — is maintained in the ART for `annotKey`. Built-in
+keys are not excluded; the ART for `$owner` lets a client enumerate the
+set of owners that currently hold at least one entity, even though no
+range-query operator currently targets `$owner`.
+
+The invariant the write path maintains is:
+
+> A value `v` is present in the ART for key `k` iff the Tier-1 pair
+> bitmap for `(k, v)` is non-empty after the current op.
+
+The ART is therefore inserted into on the first entity to carry a
+given `(k, v)` and removed from on the last entity to leave it. When
+the ART becomes empty (no live values for `k`), the index account is
+tombstoned (`tombstone_code`) — same `nonce=1, empty code` shape as a
+deleted entity account.
+
+#### Value Encoding in the ART
+
+ART keys are the raw bytes of `annotVal` as the pair-account derivation
+already encodes them — same bytes used to derive `pair_address`. The
+encoding is chosen so lexicographic byte order matches the order the
+query operators need:
+
+| Source                         | ART key bytes                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------------- |
+| User UINT attribute            | 32-byte big-endian (`U256::to_be_bytes`) — lex order = numeric order                         |
+| User STRING attribute          | Raw UTF-8 bytes, trailing `0x00` stripped by the precompile before reaching the op handler   |
+| User ENTITY_KEY attribute      | 32 raw bytes (no strip; an entity key may end in zeros)                                      |
+| `$expiration`, `$createdAtBlock` | 8-byte big-endian uint64 (fixed-width — lex order = block-number order)                    |
+| `$owner`, `$creator`           | 20-byte address                                                                              |
+| `$key`                         | 32-byte entity key                                                                           |
+| `$contentType`                 | trailing-zero-stripped 128-byte MIME container                                               |
+| `$all`                         | empty (single ART entry for the empty value)                                                 |
+
+The ART serialisation format is deterministic — identical trees
+produce identical bytes — so the `codeHash` agrees across nodes. The
+format is pinned at consensus and lives in
+`crates/arkiv-entitydb/src/index_tree.rs`; any future change to it is
+a hard fork.
+
 ### Why Numerical IDs
 
 Bitmaps are `roaring64` — compressed bitsets over 64-bit unsigned
@@ -438,6 +507,13 @@ Whenever the op needs the entity's pre-op `owner` or `expires_at`
 (for a bitmap removal, or to preserve in a re-encoded RLP), it reads
 the existing entity account's RLP. The contract never forwards
 `old*` fields.
+
+Every pair-bitmap mutation triggers an ART maintenance step. On
+first-entity-into-pair, the value is inserted into the index account
+for that key; on last-entity-out-of-pair, the value is removed (and
+the index account is tombstoned if its ART has become empty). The op
+descriptions below list pair-bitmap writes; each implies the
+corresponding ART write under that invariant.
 
 ### Create
 
@@ -593,28 +669,47 @@ resolve cleanly.
 The response's `block_number` field reports the block the query was
 evaluated against (the explicit `atBlock`, or the head if absent).
 
-### Range / Glob (not yet implemented)
+### Range and Prefix-Glob
 
-Range queries (`k < n`, `k > n`, `k <= s`, `k >= s`) and glob queries
-(`k ~ "prefix*"`, `k !~ "*pat*"`) would need an ordered enumeration
-over the set of `(annot_key, annot_val)` pairs that exist for a given
-key. The trie's pair-account addresses are
-`keccak256("arkiv.pair" || k || 0x00 || v)[:20]` — the hash destroys
-value ordering, so the trie itself doesn't support range scans over
-values.
+Range (`<`, `<=`, `>`, `>=`) and prefix-glob (`~`, `!~`) operators
+evaluate against the Tier-2 index account for the queried key.
 
-The standard solution (which arkiv-storage-service used) is an
-**ordered sibling index**: an out-of-trie KV store keyed by
-`annot_key || 0x00 || annot_val` whose entries point into the trie's
-pair accounts. Numeric values stored as fixed-width big-endian, so
-lex order matches numeric order. Iteration is bounded by the number
-of distinct pairs matching the prefix, not by the number of entities.
+```
+Query: price > 100 AND price < 500
 
-That index is **not built yet** in `arkiv-op-reth`. Range and glob
-queries are currently parse errors — the grammar doesn't include
-those operators. When the ordered index lands, the lexer + parser
-will gain `<`, `<=`, `>`, `>=`, `~`, `!~` and the evaluator will gain
-matching iteration paths.
+1. Encode bounds as 32-byte big-endian UINT:
+     lo_key = [0×24 zeros, 0,0,0,0,0,0,0,100]
+     hi_key = [0×24 zeros, 0,0,0,0,0,0,1,244]
+
+2. index_addr = keccak256("arkiv.index" || "price")[:20].
+3. eth_getCode(index_addr) → deserialise ART.
+4. ART.iter_gt(lo_key) and ART.iter_lt(hi_key) → enumerate matching v_i.
+5. For each v_i:
+     pair_addr_i = keccak256("arkiv.pair" || "price" || 0x00 || v_i)[:20]
+     bitmap_i    = deserialise(eth_getCode(pair_addr_i))
+6. Union all bitmap_i → result bitmap.
+7. Compose with other sub-expression bitmaps via the standard
+   &&/||/NOT pipeline; apply cursor / page-size; resolve IDs to
+   entity addresses via the system account.
+```
+
+Prefix-glob (`tag ~ "image/*"`) uses `ART.iter_prefix(prefix_bytes)`
+on the index for `tag`; the rest of the pipeline is identical. The
+glob operator is **prefix-only** — wildcards in the middle of a
+pattern (`"img/*/large"`) are not supported by the underlying ART
+scan. The grammar accepts `"prefix*"` and treats the bytes preceding
+the `*` as the prefix; `!~` is `$all \ eval(~)`.
+
+Range operators are well-defined against any key whose ART encoding
+gives lex-order ≡ semantic-order — UINT user attrs, `$expiration`,
+and `$createdAtBlock` are the obvious targets. The interpreter does
+not type-check the predicate against the key's actual encoding; a
+range query on `$owner` will evaluate against the lex order of
+20-byte addresses, which is rarely meaningful but is well-defined.
+
+Range and prefix-glob compose with the equality family via the
+standard `&&` / `||` / `NOT` combinators; each leaf produces a bitmap
+and the combinators run at the bitmap layer.
 
 ### Query Completeness Proofs
 
@@ -638,6 +733,15 @@ is complete iff it equals the decoded set.
 per term; combine bitmaps locally with the same logic the server
 ran; one ID-resolution proof per surviving ID.
 
+**Range / prefix-glob.** The ART for the queried key is content-
+addressed in the trie via the index account's `codeHash`. Request
+`eth_getProof(index_address, [], blockN)` to bind `codeHash` to
+`stateRoot_N`, then `eth_getCode(index_address, blockN)` for the ART
+bytes; verify `keccak256(art_bytes) == codeHash`. Deserialise the ART,
+walk the bound or prefix locally, and for each value yielded apply
+the equality-term proof above. The result is complete iff every
+returned ID corresponds to a value the local ART scan also yields.
+
 ---
 
 ## 5. Gas Model
@@ -648,18 +752,29 @@ cost from calldata only and charges it via standard revm precompile
 gas accounting (`PrecompileOutput::new` for success,
 `halt(OutOfGas)` for budget exhaustion).
 
-| Op | Base | Per-byte | Per-annotation |
-|---|---|---|---|
-| `Create` | `G_CREATE = 80_000` | `G_BYTE = 16` × `(payload_bytes + annotation_bytes)` | `G_ANNOTATION = 5_000` |
-| `Update` | `G_UPDATE = 30_000` | same | same |
-| `Extend` | `G_EXTEND = 25_000` | — | — |
-| `Transfer` | `G_TRANSFER = 25_000` | — | — |
-| `Delete` | `G_DELETE = 50_000` | — | — |
-| `Expire` | `G_EXPIRE = 50_000` | — | — |
+| Op | Base | Per-byte | Per-annotation | Per indexed user attr |
+|---|---|---|---|---|
+| `Create` | `G_CREATE` | `G_BYTE = 16` × `(payload_bytes + annotation_bytes)` | `G_ANNOTATION = 5_000` | `G_ART_INDEXED_ANNOTATION = 6_000` |
+| `Update` | `G_UPDATE` | same | same | same |
+| `Extend` | `G_EXTEND` | — | — | — |
+| `Transfer` | `G_TRANSFER` | — | — | — |
+| `Delete` | `G_DELETE` | — | — | — |
+| `Expire` | `G_EXPIRE` | — | — | — |
 
 `annotation_bytes` is `annotation_count × (32 + 128)` — the max
-`Ident32` name plus the max `value128` payload per annotation. The
-constant lives in `crates/arkiv-node/src/precompile.rs`.
+`Ident32` name plus the max `value128` payload per annotation. All
+constants live in `crates/arkiv-node/src/precompile.rs`.
+
+`G_ART_INDEXED_ANNOTATION` is charged per user attribute whose
+`valueType` is `UINT` or `STRING` — i.e. attributes for which the
+write path will read and (conditionally) rewrite an ART. It is
+charged conservatively: always, regardless of whether the specific
+op actually mutates the ART (only first-entity-into-pair and
+last-entity-out-of-pair do), so the gas formula stays a pure function
+of calldata. ENTITY_KEY user attributes and built-in-key ART writes
+(`$owner` on Transfer, `$expiration` on Extend, etc.) are not
+included in this count today — a small consensus-safe under-charge
+documented in `precompile.rs:75`.
 
 Per-batch gas is computed before any state changes are applied. On
 out-of-gas the entire call budget is consumed (matching EVM OOG
@@ -707,6 +822,16 @@ decode bitmap; for each id:
   eth_getProof(system_account, [slot[keccak256("id_to_addr", id)]], blockN)  →  proves id → entity_address
 ```
 
+For a **range or prefix-glob query result**:
+
+```
+eth_getProof(index_address, [], blockN)                          →  proves ART codeHash
+eth_getCode (index_address, blockN)                              →  returns ART bytes
+verify keccak256(bytes) == codeHash
+deserialise ART; walk the requested bound or prefix locally; for each yielded value v_i
+  derive pair_address(k, v_i); verify each bitmap as for equality (above)
+```
+
 For an **ownership / lifetime check**:
 
 ```
@@ -752,6 +877,12 @@ Trie (committed in stateRoot):
     code                                                    → roaring64 bitmap bytes
     storage: (none)
 
+  Index account  (one per annotKey with ≥1 live value; address = keccak256("arkiv.index" || k)[:20]):
+    nonce                                                   → 1
+    codeHash                                                → keccak256(art_bytes)           (CONTENT HASH)
+    code                                                    → serialised ART bytes
+    storage: (none)
+
 MDBX (op-reth's environment):
   Standard op-reth tables only (Accounts, Storages, Bytecodes, ChangeSets, …).
   No custom Arkiv tables.
@@ -773,10 +904,11 @@ bitmap content hash by construction).
 | Journal / out-of-trie consensus-critical state | None |
 | Third-party proof of entity state | Yes — `eth_getProof` against any retained block |
 | Third-party proof of equality query result | Yes — bitmap is content-addressed; ID map is trie-committed |
-| Range / glob query support | Not yet — needs an ordered sibling index |
+| Range / prefix-glob query support | Yes — Tier-2 ART in index accounts |
+| Arbitrary-pattern glob | No — `~` is prefix-only (`"prefix*"`) |
 | Historical entity reads | Yes — trie versioning |
-| Historical equality queries | Yes — pair `codeHash` retained at all blocks |
-| Covered by Optimism fault proof system | Yes for all state |
+| Historical equality / range queries | Yes — pair and index `codeHash` retained at all blocks |
+| Covered by Optimism fault-proof system | Expected under `kona` / `asterisc` (see below) |
 | External process required | No |
 | Reorg handling required | No — op-reth standard |
 | Gas model deterministic | Yes — pure function of op shape |
@@ -788,24 +920,27 @@ creation, `SetCode`, `SetNonce`, `SetState`. These are standard
 Ethereum state transitions included in the `stateRoot`. Nothing the
 precompile writes is out-of-trie.
 
-Op-reth's standard fault-proof integration (`op-program`, `cannon`,
-`op-challenger`) requires only that the Arkiv precompile be
-registered in the fault-proof EVM build, so disputed L3 blocks
-containing Arkiv ops can be replayed identically.
+The fault-proof path that composes with Arkiv is **`kona`** (Rust
+fault-proof program) on **`asterisc`** (RISC-V VM). Kona links
+against the same reth crates as the sequencer, so `arkiv-entitydb`
+and the Arkiv precompile land in the FP program by ordinary Rust
+linkage with no extra glue.
 
-The precompile must be deterministic across nodes — gas formulas are
-pure functions of op shape, and trie writes are pure functions of
-`(op batch, prior trie state)`. The same `EvmFactory` is used by the
-sequencer, validator, and fault-proof program, so all three paths
-execute identically.
+The precompile is deterministic across nodes — gas formulas are pure
+functions of op shape, and trie writes are pure functions of
+`(op batch, prior trie state)` — so once the kona / asterisc path is
+wired up, sequencer, validator, and FP replays produce identical
+state.
 
-What the fault proof system covers:
+What such an integration would cover:
 
 - Entity payload integrity: `codeHash` of entity account.
 - Ownership / lifetime: `entities` mapping in `EntityRegistry`.
 - Entity metadata: system-account ID maps and entity counter.
 - Annotation index integrity (per-pair): `codeHash` of each pair
   account (the bitmap content hash itself).
+- Range-index integrity (per-key): `codeHash` of each index account
+  (the ART content hash itself).
 
 `eth_getProof` works against every Arkiv account exactly as for any
 Ethereum account.
@@ -814,41 +949,45 @@ Ethereum account.
 
 ## 9. Open Questions
 
-1. **Range / glob query support.** Needs an ordered sibling index
-   keyed by `annot_key || 0x00 || annot_val`. Numeric values stored
-   fixed-width big-endian for lex-order ≡ numeric-order. The natural
-   place to register the table is an MDBX env opened alongside
-   op-reth's, but reth's `Tables` enum is closed at the pinned rev —
-   need to pick between patching reth, opening a sibling env at a
-   separate path, or using an upstream extension surface that lands
-   later.
+1. **Op-reth `Bytecodes` retention.** Old bitmap-byte, entity-RLP-byte,
+   and ART-byte entries in op-reth's `Bytecodes` table are reachable
+   only via historical state roots. Op-reth's retention policy (full
+   archive, pruned, snapshot-only) determines how far back historical
+   queries can reach. Document the resulting window per node profile.
 
-2. **Op-reth `Bytecodes` retention.** Old bitmap-byte and
-   entity-RLP-byte entries in op-reth's `Bytecodes` table are
-   reachable only via historical state roots. Op-reth's retention
-   policy (full archive, pruned, snapshot-only) determines how far
-   back historical queries can reach. Document the resulting window
-   per node profile.
+2. **First-sight overhead.** Every distinct `(k, v)` ever seen
+   creates a pair account, and every distinct `k` ever seen creates
+   an index account. For chains with extreme annotation cardinality
+   (e.g., timestamps used as annotation values), this produces a lot
+   of accounts and the ART for the affected key grows linearly. Worth
+   modelling against realistic workloads — including the ART
+   serialised size at very high cardinality.
 
-3. **First-sight overhead.** Every distinct `(k, v)` ever seen
-   creates a pair account. For chains with extreme annotation
-   cardinality (e.g., timestamps used as annotation values), this
-   produces a lot of pair accounts. Worth modelling against realistic
-   workloads.
+3. **ART gas calibration.** `G_ART_INDEXED_ANNOTATION = 6_000` is a
+   flat per-attribute charge that under-counts ENTITY_KEY user attrs
+   and built-in-key writes (`$owner` on Transfer, `$expiration` on
+   Extend, etc.). Both gaps are consensus-safe but should be
+   re-evaluated once realistic ART sizes are measured.
 
-4. **Fees.** Native gas vs. an ERC-20 surcharge enforced by
+4. **Arbitrary-pattern glob.** Today `~` accepts prefix patterns
+   (`"image/*"`) only. Mid-pattern wildcards and `?` would need an
+   evaluator that scans the full ART rather than calling
+   `iter_prefix`. Not on the critical path.
+
+5. **Fees.** Native gas vs. an ERC-20 surcharge enforced by
    `EntityRegistry`. Independent decision, can be deferred. The
    precompile's gas model is unaffected either way.
 
-5. **Per-op tx-position metadata.** `transaction_index_in_block` and
+6. **Per-op tx-position metadata.** `transaction_index_in_block` and
    `operation_index_in_transaction` are reported as 0 in
    `arkiv_query` responses today — revm's precompile context doesn't
    expose either. Plumbing them through would need a block-builder
    side annotation.
 
-6. **Pair-account address collisions.** `keccak256("arkiv.pair" || …)[:20]`
-   derivations could in principle collide with an existing
-   externally-owned account on the L3. Genesis-time check + chain
-   bring-up documentation is sufficient. (The system account is the
-   fixed adjacent address `0x44…0046`, so collision risk there is
-   gone.)
+7. **Pair-account / index-account address collisions.**
+   `keccak256("arkiv.pair" || …)[:20]` and
+   `keccak256("arkiv.index" || …)[:20]` derivations could in
+   principle collide with an existing externally-owned account on the
+   L3. Genesis-time check + chain bring-up documentation is
+   sufficient. (The system account is the fixed adjacent address
+   `0x44…0046`, so collision risk there is gone.)

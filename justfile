@@ -91,6 +91,8 @@ node-dev *args='':
         --ws.api eth,net,web3,debug \
         --ws.port 8546 \
         --log.file.directory "$DATADIR/logs" \
+        --txpool.minimal-protocol-fee 1 \
+        --txpool.minimum-priority-fee 0 \
         {{ args }}
 
 # Run arkiv-node with custom args

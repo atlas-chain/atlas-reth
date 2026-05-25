@@ -95,6 +95,37 @@ node-dev *args='':
         --txpool.minimum-priority-fee 0 \
         {{ args }}
 
+# Resume arkiv-node in dev mode against the existing datadir (no wipe, no re-init).
+# Use this after a `node-dev` run to restart without losing the MDBX state.
+node-dev-resume *args='':
+    #!/usr/bin/env bash
+    set -e
+    DATADIR="{{ tmp_dir }}/node-dev"
+    GENESIS="$DATADIR/genesis.json"
+    if [ ! -d "$DATADIR" ]; then
+        echo "error: no existing datadir at $DATADIR — run 'just node-dev' first" >&2
+        exit 1
+    fi
+    echo "datadir: $DATADIR"
+    echo "genesis: $GENESIS"
+    echo "registry: {{ registry }}"
+    echo "dev account: {{ dev_addr }}"
+    {{ arkiv_node }} node \
+        --chain "$GENESIS" \
+        --dev \
+        --dev.block-time 2s \
+        --datadir "$DATADIR" \
+        --http \
+        --http.api eth,net,web3,debug \
+        --http.corsdomain '*' \
+        --ws \
+        --ws.api eth,net,web3,debug \
+        --ws.port 8546 \
+        --log.file.directory "$DATADIR/logs" \
+        --txpool.minimal-protocol-fee 1 \
+        --txpool.minimum-priority-fee 0 \
+        {{ args }}
+
 # Run arkiv-node with custom args
 node *args='':
     {{ arkiv_node }} {{ args }}

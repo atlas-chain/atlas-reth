@@ -89,6 +89,7 @@ pub struct IncludeData {
 pub struct QueryResponse {
     pub data: Vec<EntityData>,
     /// Block number at which the query was evaluated.
+    #[serde(serialize_with = "ser_u64_hex")]
     pub block_number: u64,
     /// Cursor for the next page, or `None` if this is the last page.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,9 +113,9 @@ pub struct EntityData {
     pub owner: Option<Address>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creator: Option<Address>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_u64_hex")]
     pub created_at_block: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_u64_hex")]
     pub last_modified_at_block: Option<u64>,
     /// Always 0 — reth's revm context doesn't expose the
     /// tx-index-in-block during precompile execution. Kept in the wire
@@ -356,6 +357,20 @@ fn entity_data_from(e: EntityRlp, inc: &ResolvedIncludeData) -> EntityData {
         operation_index_in_transaction: inc.operation_index_in_transaction.then_some(0),
         string_attributes,
         numeric_attributes,
+    }
+}
+
+fn ser_u64_hex<S: serde::Serializer>(v: &u64, s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&format!("0x{v:x}"))
+}
+
+fn ser_opt_u64_hex<S: serde::Serializer>(
+    v: &Option<u64>,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match v {
+        Some(n) => s.serialize_str(&format!("0x{n:x}")),
+        None => s.serialize_none(),
     }
 }
 

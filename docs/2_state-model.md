@@ -116,18 +116,15 @@ inserts the precompile in both `create_evm` and
 `create_evm_with_inspector` so simulation, tracing, payload-building,
 validation, and canonical execution all see the same set.
 
-No `BlockExecutor` wrapper, no system call, no ExEx, no
-`arkiv_stateRoot` slot, no custom MDBX tables, no deployed contract
-bytecode.
-
 ### Arkiv Precompile
 
 The user-facing entry point and the EVM-side adapter to
 `arkiv-entitydb`. Per call:
 
 - **Caller restrictions.** Reject `DELEGATECALL` / `CALLCODE`
-  (precompile mutates state at its own address; delegated semantics
-  would silently corrupt unrelated accounts) and value-bearing calls.
+  (defensive: the precompile does not currently mutate state at its
+  own address, but if it ever does, delegated semantics would
+  silently corrupt unrelated accounts) and value-bearing calls.
   `STATICCALL` is allowed only for the `nonces(address)` view —
   `execute()` requires a regular `CALL`.
 - **Selector dispatch.** First four calldata bytes select between
@@ -680,11 +677,6 @@ MDBX (op-reth's environment):
   Standard op-reth tables only (Accounts, Storages, Bytecodes, ChangeSets, …).
   No custom Arkiv tables.
 ```
-
-Zero custom MDBX tables. No journal table. No `arkiv_stateRoot`
-slot. No content-addressed-bitmap side store (because bitmaps **are**
-content-addressed natively — `codeHash` of a pair account is the
-bitmap content hash by construction).
 
 ### Properties
 

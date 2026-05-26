@@ -17,14 +17,6 @@ The precompile owns per-op validation (ownership, expiration,
 `Ident32` charset), `EntityOperation` event emission, gas accounting,
 and dispatch into `arkiv-entitydb`.
 
-Internally, `arkiv-entitydb` uses a fixed entitydb-private address as
-a storage host for per-caller nonces, the global entity counter, and
-the ID ↔ address maps. That account is **materialised lazily on the
-first op**: the entitydb crate bumps its nonce to 1 the first time it
-touches the account via `StateAdapter::ensure_account_persists`, so
-EIP-161 doesn't prune the storage at end-of-tx. No genesis allocation
-is required.
-
 Every entity, every annotation index, and every counter lives inside
 op-reth's standard world-state trie, committed in the L3 `stateRoot`.
 Reads are served by the `arkiv_*` namespace backed entirely by local
@@ -41,22 +33,22 @@ is created on the first write.
 ## System overview
 
 ```
-                  ┌──────────────────────────────────────────────────┐
-                  │ arkiv-node binary                                │
-                  │                                                  │
-                  │   ┌──────────────────────────────────────────┐   │
-   user tx ──────►│   │ revm  ─── ArkivOpEvmFactory inserts ─────┼─► trie state
-                  │   │       │   ArkivPrecompile at ARKIV_ADDR  │   │   entity / pair / index
-                  │   │       │   into PrecompilesMap            │   │   accounts + system-account
-                  │   │       └──► dispatches into arkiv-entitydb│   │   storage (counter, nonces,
-                  │   └──────────────────────────────────────────┘   │   ID maps) — committed in stateRoot
-                  │                                                  │
-                  │   ┌──────────────────────────────────────────┐   │
-   user query ───►│   │ arkiv_* RPC                              │   │
-                  │   │   parse → evaluate via arkiv-entitydb    │   │
-                  │   │   against a read-only StateProvider      │   │
-                  │   └──────────────────────────────────────────┘   │
-                  └──────────────────────────────────────────────────┘
+                  ┌──────────────────────────────────────────────────────────────────────────────────┐
+                  │ arkiv-node binary                                                                │
+                  │                                                                                  │
+                  │   ┌──────────────────────────────────────┐                                       │
+   user tx ──────►│   │ revm                                 │                                       │
+                  │   │   ArkivOpEvmFactory installs the     │                                       │
+                  │   │   ArkivPrecompile at ARKIV_ADDR;     │    ┌──────────────────────────────┐   │
+                  │   │   precompile dispatches ops ─────────┼───►│ arkiv-entitydb               │   │
+                  │   └──────────────────────────────────────┘    │                              │   │
+                  │                                               │   reads/writes entity, pair, │   │
+                  │   ┌──────────────────────────────────────┐    │   and index accounts +       │   │
+   user query ───►│   │ arkiv_* RPC                          │    │   system-account storage on  │   │
+                  │   │   parses + evaluates queries via ────┼───►│   the passed-in StateDB /    │   │
+                  │   │   read-only StateProvider            │    │   StateProvider              │   │
+                  │   └──────────────────────────────────────┘    └──────────────────────────────┘   │
+                  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Everything flows through revm's journaled state and ends up in the

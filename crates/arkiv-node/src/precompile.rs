@@ -142,9 +142,10 @@ pub fn arkiv_precompile() -> DynPrecompile {
     let call = move |mut input: PrecompileInput<'_>| -> PrecompileResult {
         let _call_span = tracing::debug_span!("precompile_call").entered();
 
-        // Reject DELEGATECALL / CALLCODE: the precompile mutates state
-        // at its own address, so DELEGATECALL semantics (caller's
-        // storage) would silently corrupt unrelated accounts.
+        // Reject DELEGATECALL / CALLCODE. Defensive: the precompile
+        // does not currently mutate state at its own address, but if
+        // it ever does, delegated semantics (caller's storage) would
+        // silently corrupt unrelated accounts.
         if input.target_address != input.bytecode_address {
             return Err(PrecompileError::Fatal(
                 "arkiv precompile: DELEGATECALL/CALLCODE not allowed".into(),

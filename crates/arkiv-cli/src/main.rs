@@ -31,7 +31,7 @@ struct Cli {
     )]
     private_key: String,
 
-    /// EntityRegistry contract address.
+    /// Arkiv precompile address.
     #[arg(long, default_value = "0x4400000000000000000000000000000000000044")]
     registry: Address,
 

@@ -59,8 +59,9 @@ sol! {
 /// None of this work emits arkiv spans, so callers should invoke this
 /// *before* [`init_tracing`] to keep the trace free of setup noise.
 pub fn boot_direct_evm() -> Result<(DirectEvm, Address)> {
-    // DB seeded from production genesis_alloc: EntityRegistry contract
-    // bytecode + system account at nonce=1 + 100 prefunded dev signers.
+    // DB seeded from production genesis_alloc: 100 prefunded dev
+    // signers. The system account is materialised lazily on the first
+    // op, so nothing else needs seeding here.
     let mut db = CacheDB::new(EmptyDB::default());
     for (addr, account) in genesis_alloc()? {
         let info = AccountInfo {

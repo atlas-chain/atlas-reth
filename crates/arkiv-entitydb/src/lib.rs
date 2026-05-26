@@ -1,4 +1,4 @@
-//! Canonical home of the v2 Arkiv state model.
+//! Canonical home of the Arkiv state model.
 //!
 //! Every entity and every annotation bitmap lives in op-reth's standard
 //! world-state trie as an Ethereum account:

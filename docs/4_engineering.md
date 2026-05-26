@@ -110,7 +110,7 @@ The execution-client binary. A thin wrapper around
   allowed for `nonces(address)` only), calldata decode (selector
   dispatch between `execute(Operation[])` and `nonces(address)`),
   per-op validation (ownership, expiration, `Ident32` charset),
-  Solidity-style revert encoding with v1 error selectors,
+  Solidity-style revert encoding with the standard error selectors,
   `EntityOperation` event emission, gas accounting (pure function of
   op shape), `ReadWriteStateAdapter` over `EvmInternals`, op dispatch
   into `arkiv-entitydb`.
@@ -260,7 +260,7 @@ binary runs against any valid OP-stack chainspec.
 
 | Decision | Why |
 |---|---|
-| Precompile target at `ARKIV_ADDRESS = 0x4400…0044` | Matches OP convention for system contract slots; the address is a property of the chain, not the binary. The SDK was already calling this address as the EntityRegistry contract in v1, so keeping it preserves the user-facing ABI. |
+| Precompile target at `ARKIV_ADDRESS = 0x4400…0044` | Matches OP convention for system contract slots; the address is a property of the chain, not the binary. |
 | System account (entitydb-internal at `0x4400…0046`) | Hosts the precompile's consensus storage (counter, nonces, ID maps) on a dedicated empty-coded account. Splitting it from `ARKIV_ADDRESS` keeps the precompile target itself a pure programmatic-registration target (mirrors how standard precompiles like `ecrecover` work). `pub(crate)` in `arkiv-entitydb` — external code never sees the address. |
 | Lazy system-account materialisation | `arkiv-entitydb::bump_nonce` calls `StateAdapter::ensure_account_persists` on first touch, bumping the account's nonce to 1 so EIP-161 doesn't prune it. No genesis allocation, no chainspec dependency. |
 | Custom `EvmFactory` (not ExEx) | State mutation happens inside EVM execution; the result lands in `stateRoot` and inherits op-reth's standard reorg machinery for free. |
@@ -285,9 +285,9 @@ binary runs against any valid OP-stack chainspec.
 - **Built-in `--chain arkiv` name.** Could be done via a custom
   `ChainSpecParser`. Not pursued; the file-based flow works and
   composes uniformly with prod.
-- **Mainnet `L2Genesis.s.sol` integration.** No longer needed — the
-  system account is materialised lazily, so there's nothing to
-  register in genesis.
+- **Mainnet `L2Genesis.s.sol` integration.** Not needed — the system
+  account is materialised lazily, so there's nothing to register in
+  genesis.
 - **Arbitrary-pattern glob.** `~` accepts prefix patterns only —
   mid-pattern wildcards and `?` would need a full ART scan rather
   than `iter_prefix`. Not on the critical path.

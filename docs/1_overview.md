@@ -28,8 +28,8 @@ is required.
 Every entity, every annotation index, and every counter lives inside
 op-reth's standard world-state trie, committed in the L3 `stateRoot`.
 Reads are served by the `arkiv_*` namespace backed entirely by local
-state. There is no EntityRegistry contract, no external indexer
-process, no JSON-RPC bridge, no ExEx, no out-of-trie state.
+state. No external indexer process, no JSON-RPC bridge, no ExEx, no
+out-of-trie state.
 
 The binary is a **drop-in op-reth**: any valid OP-stack chainspec
 works. The custom `EvmFactory` installs the Arkiv precompile, the

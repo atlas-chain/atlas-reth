@@ -9,8 +9,7 @@ EOAs and SDKs `CALL` that address with the same calldata they would
 send to a Solidity contract.
 
 This file exists so SDK / forge consumers have a canonical ABI to
-codegen against; function selectors and event signatures match the
-v1 `EntityRegistry` contract exactly.
+codegen against.
 
 ## Build (optional, for SDK codegen)
 
@@ -19,5 +18,5 @@ forge build
 ```
 
 Produces `out/EntityRegistry.sol/EntityRegistry.json`. Nothing in
-`arkiv-op-reth` reads the build output — `arkiv-genesis` no longer
-bakes contract bytecode into the binary.
+`arkiv-op-reth` reads the build output — `arkiv-genesis` does not
+bake contract bytecode into the binary.

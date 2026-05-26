@@ -9,9 +9,8 @@ address with the same `execute(Operation[])` / `nonces(address)` ABI a
 Solidity contract would expose. Entity payloads, the annotation index
 (per-pair roaring64 bitmaps), the Tier-2 ART range index, and the
 global counter / nonces / ID maps all live in the L3 state trie as
-Ethereum accounts — committed in `stateRoot`. There is no
-EntityRegistry contract, no external indexer process, and no
-out-of-trie state.
+Ethereum accounts — committed in `stateRoot`. No external indexer
+process, no out-of-trie state.
 
 The binary serves both write and read paths:
 

@@ -1,11 +1,11 @@
 //! Arkiv precompile — the single entry point Arkiv exposes to the EVM.
 //!
-//! Sits at [`ARKIV_ADDRESS`] (`0x44…0044`), the address the SDK already
-//! targets for `execute(Operation[])` / `nonces(address)` calls. There
-//! is no `EntityRegistry` Solidity predeploy in v2 — this precompile
-//! decodes the SDK calldata directly, runs ownership / expiration /
-//! charset validation, mints entity keys, emits `EntityOperation`
-//! events, and dispatches to the [`arkiv_entitydb`] state handlers.
+//! Sits at [`ARKIV_ADDRESS`] (`0x44…0044`), the address EOAs and SDKs
+//! `CALL` for `execute(Operation[])` / `nonces(address)`. The
+//! precompile decodes the calldata directly, runs ownership /
+//! expiration / charset validation, mints entity keys, emits
+//! `EntityOperation` events, and dispatches to the [`arkiv_entitydb`]
+//! state handlers.
 //!
 //! Layered responsibilities:
 //!
@@ -18,12 +18,12 @@
 //!    `execute(Operation[])` (write) or `nonces(address)` (view).
 //! 3. Per-op validation (charset, ownership, expiration, BTL, transfer
 //!    constraints) — failures are returned as Solidity-style reverts
-//!    so the SDK's error decoders match v1.
+//!    so SDK error decoders resolve them.
 //! 4. State mutation via [`arkiv_entitydb`]'s op handlers, threaded
 //!    through a [`ReadWriteStateAdapter`](crate::state_adapter::ReadWriteStateAdapter)
 //!    over revm's `EvmInternals`.
 //! 5. Log emission (`EntityOperation`) — addressed at `ARKIV_ADDRESS`
-//!    so the SDK's `eth_getLogs` filter on the SDK constant resolves
+//!    so the SDK's `eth_getLogs` filter on that address resolves
 //!    every event.
 
 use alloy_evm::precompiles::{DynPrecompile, PrecompileInput};
@@ -75,13 +75,13 @@ sol! {
         uint8 indexed operationType,
         address indexed owner,
         uint32 expiresAt,        // BlockNumber32 UDVT
-        bytes32 entityHash       // always bytes32(0) in v2
+        bytes32 entityHash       // always bytes32(0); reserved for future use
     );
 
-    // ── Error selectors (v1-compatible) ──────────────────────────────
+    // ── Error selectors ──────────────────────────────────────────────
     //
     // Returned as Solidity-style revert payloads so SDK error decoders
-    // match v1 byte-for-byte.
+    // resolve them.
 
     error Ident32Empty();
     error Ident32InvalidByte(uint256 position, bytes1 value);
@@ -615,10 +615,9 @@ fn revert(data: Bytes, reservoir: u64) -> PrecompileOutput {
 
 /// `keccak256(abi.encodePacked(chainId, ARKIV_ADDRESS, owner, nonce))` —
 /// matches the SDK's local key derivation
-/// ([arkiv-sdk-js/src/utils/arkivTransactions.ts](arkiv-sdk-js/src/utils/arkivTransactions.ts#L116))
-/// and the v1 `EntityRegistry.entityKey(...)` formula. The "registry"
-/// address slot is reused for our single Arkiv address so the SDK's
-/// derivation continues to match.
+/// ([arkiv-sdk-js/src/utils/arkivTransactions.ts](arkiv-sdk-js/src/utils/arkivTransactions.ts#L116)),
+/// so clients that hold the current `nonces[caller]` can predict the
+/// entity key before submitting the tx.
 fn derive_entity_key(chain_id: u64, owner: Address, nonce: u32) -> B256 {
     let mut buf = Vec::with_capacity(32 + 20 + 20 + 4);
     buf.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());

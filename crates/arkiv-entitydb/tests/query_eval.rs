@@ -3,7 +3,7 @@
 //! Each test builds state via the public op handlers (`create`,
 //! `delete`, `transfer`) against an [`InMemoryStateAdapter`], then parses
 //! and evaluates a query and asserts on the resulting ID set.
-//! Mirrors `arkiv-storage-service/query/evaluate_test.go` for the v1
+//! Mirrors `arkiv-storage-service/query/evaluate_test.go` for the
 //! grammar subset.
 
 use alloy_primitives::{Address, B256, U256};

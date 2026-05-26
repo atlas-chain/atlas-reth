@@ -1,4 +1,4 @@
-//! Continuous load generator for the EntityRegistry contract.
+//! Continuous load generator for the Arkiv precompile.
 //!
 //! Maintains an in-memory pool of "alive" entities and submits a weighted
 //! random mix of CREATE/UPDATE/EXTEND/TRANSFER/DELETE operations against

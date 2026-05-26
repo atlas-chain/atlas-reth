@@ -135,9 +135,9 @@ The user-facing entry point and the EVM-side adapter to
 - **Per-op validation.** Each `Operation` is validated in order:
   attribute-name `Ident32` charset, op-type-specific preconditions
   (entity exists / caller is owner / not expired / etc.). Failures
-  return Solidity-style reverts using the v1 error selectors
+  return Solidity-style reverts using the standard error selectors
   (`Ident32Empty`, `NotOwner`, `EntityNotFound`, ...) so SDK error
-  decoders match byte-for-byte.
+  decoders resolve them.
 - **Authorization.** Per-op, against `input.caller`:
   - `Create` — open to any EOA.
   - `Update` / `Extend` / `Transfer` / `Delete` — caller must equal

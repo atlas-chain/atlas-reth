@@ -209,9 +209,14 @@ to a value the local ART scan also yields.
 For an **ownership / lifetime check**:
 
 ```
-eth_getProof(EntityRegistry, [slot for entities[entityKey]], blockN)
-  →  proves (owner, expiresAt) at blockN
+eth_getProof(entity_address, [], blockN)  →  proves codeHash against stateRoot_N
+eth_getCode (entity_address, blockN)       →  returns RLP bytes
+decode RLP; the `owner` and `expires_at` fields are authoritative
 ```
+
+Owner and expiry live in the entity RLP — the same single
+`eth_getCode` that anchors the payload also anchors ownership and
+lifetime. There is no separate contract-side mapping to prove against.
 
 The L3 `stateRoot` is anchored to L2 and ultimately L1 by the OP
 Stack. Each of the proofs above is a single-level proof against that

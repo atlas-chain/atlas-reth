@@ -1,26 +1,39 @@
 # Arkiv on op-reth: Overview
 
 `arkiv-op-reth` builds on [op-reth](https://github.com/ethereum-optimism/optimism)
-to turn an OP-stack L2/L3 node into an **Arkiv** node by adding three things:
+to turn an OP-stack L2/L3 node into an **Arkiv** node by adding two
+things:
 
-1. Two predeploys: `EntityRegistry` at
-   `0x4400000000000000000000000000000000000044` and a singleton system
-   account at `0x4400000000000000000000000000000000000046`.
-2. A custom op-reth `EvmFactory` that registers an **Arkiv precompile**
-   at `0x4400000000000000000000000000000000000045` into `PrecompilesMap`
-   for every revm context (canonical execution, payload-building,
-   simulation, validation, tracing).
-3. An `arkiv_*` JSON-RPC namespace on the node's standard transports.
+1. A custom op-reth `EvmFactory` that registers an **Arkiv precompile**
+   at `ARKIV_ADDRESS` (`0x4400000000000000000000000000000000000044`)
+   into `PrecompilesMap` for every revm context (canonical execution,
+   payload-building, simulation, validation, tracing). EOAs and SDKs
+   `CALL` this address with the `execute(Operation[])` /
+   `nonces(address)` ABI declared by
+   [`IEntityRegistry`](../contracts/src/EntityRegistry.sol).
+2. An `arkiv_*` JSON-RPC namespace on the node's standard transports.
+
+The precompile owns per-op validation (ownership, expiration,
+`Ident32` charset), `EntityOperation` event emission, gas accounting,
+and dispatch into `arkiv-entitydb`. The chain's genesis must include a
+single empty-coded account at `SYSTEM_ACCOUNT_ADDRESS`
+(`0x4400000000000000000000000000000000000046`) with `nonce=1` — it
+hosts the precompile's consensus storage (per-caller nonces, the
+global entity counter, the ID ↔ address maps). The `nonce=1` keeps
+EIP-161 from pruning the account before the precompile writes its
+first slot. `arkiv-cli inject-predeploy` adds the system account when
+post-processing a standard OP genesis. `ARKIV_ADDRESS` itself has no
+genesis entry — the precompile is registered programmatically.
 
 Every entity, every annotation index, and every counter lives inside
 op-reth's standard world-state trie, committed in the L3 `stateRoot`.
 Reads are served by the `arkiv_*` namespace backed entirely by local
-state. There is no external indexer process, no JSON-RPC bridge, no
-ExEx, no out-of-trie state.
+state. There is no EntityRegistry contract, no external indexer
+process, no JSON-RPC bridge, no ExEx, no out-of-trie state.
 
 The binary is a **drop-in op-reth**: against a chainspec without the
-predeploy it refuses to start. Against a chainspec containing the
-predeploy it installs the custom `EvmFactory` + the `arkiv_*` RPC and
+system account it refuses to start. Against a chainspec containing it,
+the binary installs the custom `EvmFactory` + the `arkiv_*` RPC and
 serves the full Arkiv surface.
 
 ---
@@ -33,10 +46,10 @@ serves the full Arkiv surface.
                   │                                                  │
                   │   ┌──────────────────────────────────────────┐   │
    user tx ──────►│   │ revm  ─── ArkivOpEvmFactory inserts ─────┼─► trie state
-                  │   │       │   ArkivPrecompile at 0x…0045    │   │   entity / pair / index /
-                  │   │       │   into PrecompilesMap            │   │   system accounts
-                  │   │       └──► dispatches into arkiv-entitydb│   │   (committed in stateRoot)
-                  │   └──────────────────────────────────────────┘   │
+                  │   │       │   ArkivPrecompile at ARKIV_ADDR  │   │   entity / pair / index
+                  │   │       │   into PrecompilesMap            │   │   accounts + SYSTEM_ACCOUNT
+                  │   │       └──► dispatches into arkiv-entitydb│   │   storage (counter, nonces,
+                  │   └──────────────────────────────────────────┘   │   ID maps) — committed in stateRoot
                   │                                                  │
                   │   ┌──────────────────────────────────────────┐   │
    user query ───►│   │ arkiv_* RPC                              │   │
@@ -75,6 +88,10 @@ bytes are committed in `stateRoot`, clients can prove authenticity
 with `eth_getProof` + `eth_getCode`, and queries against any retained
 historical block resolve by routing reads through that block's state.
 
+The system account uses ordinary storage slots (not `code`) for the
+global counter / nonces / ID maps — those values need slot-keyed
+random access, not content-addressing.
+
 ---
 
 ## Where to read next
@@ -91,4 +108,4 @@ historical block resolve by routing reads through that block's state.
   open questions. Read this if you're working on the codebase or
   deploying a chain.
 - [`contracts/src/EntityRegistry.sol`](../contracts/src/EntityRegistry.sol)
-  — the user-facing entry-point contract.
+  — the `IEntityRegistry` ABI surface implemented by the precompile.

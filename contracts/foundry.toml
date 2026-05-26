@@ -3,11 +3,6 @@ src = "src"
 out = "out"
 libs = ["lib"]
 solc_version = "0.8.25"
-optimizer = true
-optimizer_runs = 200
-bytecode_hash = "none"
-cbor_metadata = false
 
-# Deterministic builds — no embedded metadata, no IPFS hash.
-# `predeploy bytecode` is committed in `artifacts/`; the build must
-# produce the same bytes on every machine.
+# `EntityRegistry.sol` is interface-only — kept here so SDK consumers
+# can `forge build` against a canonical ABI. No bytecode is deployed.

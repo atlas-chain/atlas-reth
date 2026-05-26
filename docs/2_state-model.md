@@ -16,10 +16,10 @@ for crate-level engineering details see
 - [1. Architecture](#1-architecture)
   - [Overview](#overview)
   - [Reth Integration](#reth-integration)
-  - [EntityRegistry Smart Contract](#entityregistry-smart-contract)
   - [Arkiv Precompile](#arkiv-precompile)
   - [arkiv-entitydb crate](#arkiv-entitydb-crate)
 - [2. State Model](#2-state-model)
+  - [Canonical addresses](#canonical-addresses)
   - [Entity Accounts](#entity-accounts)
   - [System Account](#system-account)
   - [Pair Accounts (Content-Addressed Bitmaps)](#pair-accounts-content-addressed-bitmaps)
@@ -65,13 +65,19 @@ bytes are committed in `stateRoot`, clients can prove authenticity
 with `eth_getProof` + `eth_getCode`, and queries against any retained
 historical block resolve by routing reads through that block's state.
 
-The write path has three components. The **`EntityRegistry`
-contract** is the user-facing entry point: it validates each op batch
-(ownership, liveness, attribute names) and dispatches to the **Arkiv
-precompile**. The precompile is the bridge between the contract and
-**`arkiv-entitydb`**: it charges gas as a pure function of calldata,
-then dispatches into the entitydb crate, which owns the indexing
-logic.
+A fourth kind of account — the singleton **system account** — uses
+ordinary storage slots (not `code`) to hold per-EOA nonces, the global
+entity counter, and the ID ↔ address maps. Slot-keyed access fits
+those values better than content-addressing.
+
+The write path has two components. The **Arkiv precompile** is the
+user-facing entry point: EOAs `CALL` it at `ARKIV_ADDRESS` with the
+`execute(Operation[])` / `nonces(address)` ABI, the precompile
+decodes the calldata, validates each op (ownership, liveness,
+`Ident32` charset), charges gas as a pure function of calldata,
+emits the per-op `EntityOperation` event, and dispatches into
+**`arkiv-entitydb`** — the crate that owns the indexing logic and
+the system-account slot layout.
 
 ---
 
@@ -79,26 +85,27 @@ logic.
 
 ### Overview
 
-Three components inside `arkiv-op-reth`:
+Two components inside `arkiv-op-reth`:
 
-1. The **`EntityRegistry` smart contract** — user-facing entry point
-   on the L3. Holds `(owner, expiresAt)` per entity; validates
-   ownership, liveness, and `Ident32` charset; mints entity keys;
-   collects fees; dispatches to the precompile; emits per-op logs.
-2. The **Arkiv precompile** — invoked by `EntityRegistry` from inside
-   EVM execution. A thin revm-side adapter: caller restriction,
-   calldata decode, gas accounting, dispatch into `arkiv-entitydb` via
-   a `StateAdapter` impl over `EvmInternals`.
-3. The **`arkiv-entitydb` crate** — canonical home of the state
-   model. Owns the entity / pair / system / index layout, RLP,
-   roaring bitmap, the ART index implementation, the six op
-   handlers, and the query language. No `revm` deps; runs against
-   an abstract `StateAdapter` trait.
+1. The **Arkiv precompile** — registered at `ARKIV_ADDRESS` by the
+   custom `EvmFactory`. Per call: caller restrictions; selector
+   dispatch (`execute` write path; `nonces` read path); per-op
+   validation (ownership, liveness, `Ident32` charset); gas
+   accounting as a pure function of calldata; dispatch into
+   `arkiv-entitydb` via a `StateAdapter` impl over `EvmInternals`;
+   `EntityOperation` event emission.
+2. The **`arkiv-entitydb` crate** — canonical home of the state
+   model. Owns the entity / pair / index / system-account layout,
+   RLP, roaring bitmap, the ART index implementation, the six op
+   handlers, the system-account slot layout (`pub(crate)`) with
+   `read_nonce` / `bump_nonce` as the public surface, and the query
+   language. No `revm` deps; runs against an abstract `StateAdapter`
+   trait.
 
 Every state-dependent mutation that affects consensus — entity
 account writes, pair account writes (bitmaps), index account writes
-(serialised ART), system account writes — flows through revm's
-journaled state and is committed in the L3 `stateRoot`.
+(serialised ART), system-account storage writes — flows through
+revm's journaled state and is committed in the L3 `stateRoot`.
 
 ### Reth Integration
 
@@ -109,110 +116,49 @@ inserts the precompile in both `create_evm` and
 `create_evm_with_inspector` so simulation, tracing, payload-building,
 validation, and canonical execution all see the same set.
 
-No `BlockExecutor` wrapper, no system call, no ExEx, no
-`arkiv_stateRoot` slot, no custom MDBX tables.
-
-### EntityRegistry Smart Contract
-
-`EntityRegistry` owns ownership, lifetime, and attribute-name
-validation. The Solidity source lives in
-[`contracts/src/EntityRegistry.sol`](../contracts/src/EntityRegistry.sol);
-the runtime bytecode is built with `just contracts-build` and
-committed to `contracts/artifacts/EntityRegistry.runtime.hex`
-(consumed by `arkiv-genesis` via `include_str!`).
-
-**SDK compatibility constraint.** The external surface — the
-`execute(Operation[])` selector, the `EntityOperation` event
-signature, the `nonces(address)` and `entityKey(address,uint32)`
-views, the `Operation` / `Attribute` / `Mime128` / `Ident32` /
-`BlockNumber32` struct and type layouts, and the op-type constants
-(`CREATE=1 .. EXPIRE=6`) — is held identical to arkiv-contracts v1.
-Internal storage and the contract↔precompile boundary are free to
-evolve.
-
-The contract stores only what it needs:
-
-```solidity
-struct EntityRecord {
-    address       owner;
-    BlockNumber32 expiresAt;     // packs with owner into one slot
-}
-
-mapping(address owner    => uint32)        public nonces;
-mapping(bytes32 entityKey => EntityRecord) public entities;
-```
-
-Op set: `create | update | delete | extend | transfer | expire`. The
-contract validates each op against the `entities` mapping in order,
-applies its own state changes, emits the per-op `EntityOperation`
-event, and accumulates a per-op record:
-
-| Op | Contract validation | Contract state change |
-|---|---|---|
-| `create` | `btl > 0`; `validateIdent32` on every attribute name | mint `entityKey`; insert `(owner=sender, expiresAt)` |
-| `update` | exists; `msg.sender == owner`; not expired; `validateIdent32` on every attribute name | none |
-| `extend` | exists; `msg.sender == owner`; not expired; `btl > 0`; `newExpiresAt > stored` | update `expiresAt` |
-| `transfer` | exists; `msg.sender == owner`; not expired; `newOwner ≠ 0`; `newOwner ≠ owner` | update `owner` |
-| `delete` | exists; `msg.sender == owner`; not expired | remove entry |
-| `expire` (anyone may call) | exists; `block.number > expiresAt` | remove entry |
-
-`entityKey` is minted from a sender-scoped nonce:
-```
-entityKey = keccak256(chainId || registryAddress || msg.sender || nonces[msg.sender])
-```
-The derivation is exposed via the `entityKey(address,uint32)` view so
-clients holding the sender's current `nonces` value can predict the
-key before submitting the tx.
-
-After validating and updating its own state, the contract dispatches
-the whole batch to the precompile in a single `CALL`:
-
-```solidity
-struct OpRecord {                              // internal
-    uint8                operationType;        // Entity.CREATE .. Entity.EXPIRE
-    address              sender;               // msg.sender at validate time
-    bytes32              entityKey;
-    address              newOwner;             // CREATE / TRANSFER
-    BlockNumber32        newExpiresAt;         // CREATE / EXTEND
-    bytes                payload;              // CREATE / UPDATE
-    Mime128              contentType;          // CREATE / UPDATE
-    Entity.Attribute[]   attributes;           // CREATE / UPDATE
-}
-
-function _callPrecompile(OpRecord[] memory records) internal {
-    (bool ok, bytes memory ret) = ARKIV_PRECOMPILE.call(abi.encode(records));
-    if (!ok) revert PrecompileFailed(ret);
-}
-```
-
-There are **no `old*` fields** — for ops that need the entity's
-pre-op `owner` or `expiresAt` (to remove from a bitmap, or to
-preserve in the re-encoded RLP), the precompile reads them from the
-existing entity account's RLP, which carries `owner` and `expires_at`
-(see [EntityRLP](#entityrlp)).
-
 ### Arkiv Precompile
 
-The revm-side adapter. Per call:
+The user-facing entry point and the EVM-side adapter to
+`arkiv-entitydb`. Per call:
 
-- Caller restriction: refuses non-direct calls (STATICCALL,
-  DELEGATECALL, value-bearing, or any caller other than
-  `EntityRegistry`).
-- Decode the `abi.encode(OpRecord[])` batch.
-- Compute gas as a pure function of op shape (§4). Charge up-front;
-  halt `OutOfGas` if the budget doesn't cover the batch.
-- Wrap `EvmInternals` in a `RevmStateAdapter` that implements
-  `arkiv_entitydb::StateAdapter` (`code` / `set_code` /
-  `tombstone_code` / `storage` / `set_storage`).
-- For each `OpRecord`, convert the ABI types into `arkiv-entitydb`
-  types (`Ident32` → bytes, `Mime128` → bytes, `Attribute` →
-  `StringAnnotation` / `NumericAnnotation` per `valueType`) and call
-  the matching `arkiv_entitydb::{create,update,extend,transfer,delete,expire}`.
+- **Caller restrictions.** Reject `DELEGATECALL` / `CALLCODE`
+  (defensive: the precompile does not currently mutate state at its
+  own address, but if it ever does, delegated semantics would
+  silently corrupt unrelated accounts) and value-bearing calls.
+  `STATICCALL` is allowed only for the `nonces(address)` view —
+  `execute()` requires a regular `CALL`.
+- **Selector dispatch.** First four calldata bytes select between
+  `execute(Operation[])` (write) and `nonces(address)` (read-only).
+- **Per-op validation.** Each `Operation` is validated in order:
+  attribute-name `Ident32` charset, op-type-specific preconditions
+  (entity exists / caller is owner / not expired / etc.). Failures
+  return Solidity-style reverts using the standard error selectors
+  (`Ident32Empty`, `NotOwner`, `EntityNotFound`, ...) so SDK error
+  decoders resolve them.
+- **Authorization.** Per-op, against `input.caller`:
+  - `Create` — open to any EOA.
+  - `Update` / `Extend` / `Transfer` / `Delete` — caller must equal
+    the entity's stored owner (read from the entity RLP).
+  - `Expire` — caller-agnostic; only requires `block.number > expiresAt`.
 
-The precompile does **not** validate ownership, liveness, or
-attribute names — the contract has already done that. It does no
-content validation today either (e.g. payload size caps); the contract
-is the validation surface.
+  DB chains forbid user-deployed contracts and disable EIP-7702, so
+  `input.caller` is by construction the EOA that signed the tx.
+- **Gas accounting.** Computed from calldata only (§4). Charged
+  up-front; halt `OutOfGas` if the budget doesn't cover the batch.
+- **Dispatch.** Wraps `EvmInternals` in a `ReadWriteStateAdapter`
+  implementing `arkiv_entitydb::StateAdapter`, converts ABI types
+  into entitydb's value types, and calls the matching
+  `arkiv_entitydb::{create, update, extend, transfer, delete, expire}`.
+  Nonce reads for entity-key derivation go through
+  `arkiv_entitydb::bump_nonce`; the `nonces(address)` view goes
+  through `arkiv_entitydb::read_nonce`. The precompile never
+  touches system-account slots directly.
+- **Event emission.** One `EntityOperation` log per validated op,
+  emitted from `ARKIV_ADDRESS` so the SDK's `eth_getLogs` filter on
+  that address resolves every event.
+
+The precompile is the validation surface — `arkiv-entitydb` trusts
+its inputs.
 
 ### arkiv-entitydb crate
 
@@ -226,49 +172,79 @@ pub trait StateAdapter {
     fn tombstone_code(&mut self, addr: &Address) -> Result<()>;
     fn storage(&mut self, addr: &Address, slot: B256) -> Result<B256>;
     fn set_storage(&mut self, addr: &Address, slot: B256, value: B256) -> Result<()>;
+    fn ensure_account_persists(&mut self, addr: &Address) -> Result<()>;
 }
 ```
+
+`ensure_account_persists` bumps the account's nonce to ≥ 1 so EIP-161
+doesn't prune it at end-of-tx (the empty-account check ignores
+storage). Idempotent. Used by `bump_nonce` to lazily materialise the
+system account on its first storage write — no genesis allocation
+required.
 
 The trait has two production implementations and one test
 implementation:
 
-- `arkiv_node::precompile::RevmStateAdapter` — write path. Wraps
-  `&mut EvmInternals` and goes through the journal so reverts roll
-  back cleanly on dispatch failure.
-- `arkiv_node::rpc::RethStateAdapter` — read path. Wraps a
-  `StateProviderBox` from reth; mutating methods bail (unreachable
+- `arkiv_node::state_adapter::ReadWriteStateAdapter` — write path.
+  Wraps `&mut EvmInternals` and goes through the journal so reverts
+  roll back cleanly on dispatch failure.
+- `arkiv_node::state_adapter::ReadOnlyStateAdapter` — read path. Wraps
+  a `StateProviderBox` from reth; mutating methods bail (unreachable
   from the read path).
-- `arkiv_entitydb::test_utils::InMemoryAdapter` — `cfg(test-utils)`.
+- `arkiv_entitydb::test_utils::InMemoryStateAdapter` — `cfg(test-utils)`.
   Drives the op handlers in unit tests without a revm context.
 
 The op handlers (`create` / `update` / `extend` / `transfer` /
 `delete` / `expire`) all take `&mut S: StateAdapter` and do the
 indexing math.
 
+System-state access goes through the public API:
+
+- `read_nonce(state, caller) -> Result<u32>` — current nonce for
+  the caller. Used by the precompile's `nonces(address)` dispatch
+  and by clients computing entity keys locally.
+- `bump_nonce(state, caller) -> Result<u32>` — read-then-increment.
+  Returns the pre-bump value (the nonce that should be used for the
+  entity key about to be derived). Used by the precompile's CREATE
+  path.
+
+The underlying `slot_*` helpers (`slot_entity_count`,
+`slot_id_to_addr`, `slot_addr_to_id`, `slot_nonces`) are
+`pub(crate)` — the storage layout is an entitydb implementation
+detail, not part of the public API.
+
 ---
 
 ## 2. State Model
 
-All Arkiv state lives in four kinds of Ethereum accounts: entity
-accounts (one per entity), pair accounts (one per `(annotKey,
-annotVal)` ever seen — these hold the bitmaps), index accounts (one
-per `annotKey` with at least one live value — these hold the ART), and
-the singleton system account. The `EntityRegistry` contract holds its
-own per-entity `(owner, expiresAt)` mapping plus the sender-scoped
-`nonces`. All in the trie, all committed in `stateRoot`.
+### Canonical addresses
+
+| Address | What | Genesis presence |
+|---|---|---|
+| `ARKIV_ADDRESS = 0x4400000000000000000000000000000000000044` | Precompile registration target. EOAs `CALL` here with `execute(Operation[])` / `nonces(address)` calldata. | None. The custom `EvmFactory` registers the precompile programmatically; no contract bytecode is deployed. |
+| System account (entitydb-internal, `pub(crate)` in `arkiv-entitydb`, address `0x4400…0046`) | Singleton account hosting the precompile's consensus storage: per-caller `nonces`, the global `entity_count`, and the ID ↔ address maps. | None. Materialised lazily on the first write via `StateAdapter::ensure_account_persists`, which bumps the nonce to 1 so EIP-161 doesn't prune the account. |
+
+All other Arkiv state lives on accounts whose addresses are derived
+from content: entity accounts at `entityKey[:20]`, pair accounts at
+`keccak256("arkiv.pair" || k || 0x00 || v)[:20]`, index accounts at
+`keccak256("arkiv.index" || k)[:20]`.
 
 ### Entity Accounts
 
 #### Address Derivation
 
 ```
-entityKey      = keccak256(chainId || registryAddress || msg.sender || nonces[msg.sender])
+entityKey      = keccak256(chainId || ARKIV_ADDRESS || msg.sender || nonces[msg.sender])
 entity_address = entityKey[:20]
 ```
 
-`nonces[msg.sender]` is held in `EntityRegistry`, incremented once per
-`Create` op. The address is a pure identity anchor; content
-commitment is via `codeHash`.
+`nonces[msg.sender]` is held on the system account, incremented once
+per `Create` op via `arkiv_entitydb::bump_nonce`. The address is a
+pure identity anchor; content commitment is via `codeHash`.
+
+Clients holding the sender's current `nonces` value (via the
+`nonces(address)` view) can compute the entity key locally before
+submitting the tx — no on-chain query needed.
 
 #### Account Structure
 
@@ -314,19 +290,15 @@ struct EntityRlp {
 }
 ```
 
-The RLP is **self-sufficient for query reads**: every field a client
-needs to render an entity comes from a single
-`eth_getCode(entity_address)`. No second lookup against
-`EntityRegistry`'s storage required.
+The RLP is the **single source of truth** for the entity's owner and
+expiry. The precompile reads them out of the RLP when it needs to
+authorize an op (`caller == owner`?) or check liveness (`expires_at >
+current_block`?). There is no separate contract-side mapping holding
+copies.
 
-This intentionally duplicates `owner` and `expires_at` between the
-entity RLP and the `EntityRegistry` contract's `entities` mapping.
-The two are written together by the precompile (single revm tx, both
-via journaled state) so they stay in lockstep across reorgs and
-re-execution. The contract is the source of truth for **owner /
-expiry validation** (cheap, no RLP decode in Solidity); the RLP is
-the source of truth for **query reads** (single account read, no
-stitching).
+The RLP is also **self-sufficient for query reads**: every field a
+client needs to render an entity comes from a single
+`eth_getCode(entity_address)`.
 
 `creator` and `created_at_block` are immutable — set once at `Create`,
 never updated. `owner` is rewritten on `Transfer`; `expires_at` on
@@ -340,36 +312,34 @@ address can recover the complete key.
 
 ### System Account
 
-A singleton account at a fixed address. Pre-allocated in genesis with
-`nonce = 1` (to defeat EIP-161) and empty storage.
+A singleton account at a fixed address (entitydb-internal — both the
+address constant and the `slot_*` helpers are `pub(crate)` in
+`arkiv-entitydb`; external code goes through `read_nonce` /
+`bump_nonce` and the op handlers). Empty code, empty storage at
+genesis-time *(if anything were there at all — there is no genesis
+allocation)*. The first `bump_nonce` call materialises the account by
+bumping its nonce to 1 via `StateAdapter::ensure_account_persists`,
+keeping EIP-161 from pruning the account at end-of-tx.
+
+The precompile writes the following slots over the life of the chain:
 
 ```
-System Account  (address = 0x4400000000000000000000000000000000000046)
-  nonce    = 1
+System account  (address = 0x4400000000000000000000000000000000000046, pub(crate))
+  nonce    = 1   (lazily set on first write)
   storage slots:
     slot[keccak256("entity_count")]                  →  uint64       // next entity ID
-    slot[keccak256("id_to_addr", uint64_id)]         →  address      // ID → entity_address
-    slot[keccak256("addr_to_id", entity_address)]    →  uint64       // entity_address → ID
+    slot[keccak256("id_to_addr"  || uint64_id)]      →  address      // ID → entity_address
+    slot[keccak256("addr_to_id"  || entity_address)] →  uint64       // entity_address → ID
+    slot[keccak256("nonces"      || caller)]         →  uint32       // per-EOA entity-key minting nonce
 ```
-
-The three adjacent predeploys at `0x44…0044 / 0045 / 0046` are:
-
-| Address | What |
-|---|---|
-| `0x4400…0044` | `EntityRegistry` Solidity contract |
-| `0x4400…0045` | Arkiv precompile (native Rust, registered by the custom `EvmFactory`) |
-| `0x4400…0046` | System account (no code; pre-allocated with `nonce=1` and empty storage) |
 
 The `entity_count` slot is the canonical source for ID assignment.
 Every node executing the same block sees the same value and assigns
-IDs identically.
-
-The `id_to_addr` and `addr_to_id` slots give both directions of the
-ID ↔ address map, both trie-committed. Both are written at `Create`
-and both are cleared at `Delete` / `Expire`. The address-to-ID
-direction is needed during `Delete`/`Expire` to look up the entity's
-ID without decoding the RLP; the ID-to-address direction is the
-query-time resolver for bitmap hits.
+IDs identically. `id_to_addr` and `addr_to_id` give both directions
+of the ID ↔ address map; both are written at `Create` and both are
+cleared at `Delete` / `Expire`. `nonces[caller]` is bumped once per
+`Create` op by the caller and is returned verbatim by the
+`nonces(address)` view.
 
 ### Pair Accounts (Content-Addressed Bitmaps)
 
@@ -489,15 +459,14 @@ mapping live on the system account and are trie-committed.
 
 ## 3. Lifecycle
 
-`EntityRegistry` validates ownership / liveness / charset from its
-own storage + calldata and updates its storage before calling the
-precompile. The precompile then dispatches to `arkiv-entitydb`. Every
-write goes through revm's journaled state.
+The precompile validates and authorizes each op against `input.caller`
+and the entity's RLP-encoded state, then dispatches to the matching
+`arkiv-entitydb` op handler. Every write goes through revm's
+journaled state.
 
-Whenever the op needs the entity's pre-op `owner` or `expires_at`
-(for a bitmap removal, or to preserve in a re-encoded RLP), it reads
-the existing entity account's RLP. The contract never forwards
-`old*` fields.
+The handlers read the entity's pre-op `owner` / `expires_at` /
+attribute set from the existing entity account's RLP whenever they
+need them — there is no separate contract-side mapping to consult.
 
 Every pair-bitmap mutation triggers an ART maintenance step. On
 first-entity-into-pair, the value is inserted into the index account
@@ -508,29 +477,33 @@ corresponding ART write under that invariant.
 
 ### Create
 
-**Contract:**
-1. Read and increment `nonces[msg.sender]`; derive `entityKey`.
-2. `validateIdent32` on every attribute name.
-3. Insert `entities[entityKey] = (msg.sender, expiresAt)`.
+**Precompile:** validates `btl > 0` and `Ident32` charset on every
+attribute name.
 
 **Op handler (`arkiv_entitydb::create`):**
-1. Read and increment `entity_count` on the system account; the new
+1. Bump the caller's `nonces[caller]` slot; the pre-bump value is
+   the nonce used for the new `entityKey`. (The precompile derives
+   the key via `derive_entity_key(chain_id, caller, nonce)` and
+   passes it to the handler.)
+2. Read and increment `entity_count` on the system account; the new
    value is `entity_id`.
-2. Write the system-account ID maps:
+3. Write the system-account ID maps:
    `slot[keccak256("id_to_addr", entity_id)] = entity_address`;
    `slot[keccak256("addr_to_id", entity_address)] = entity_id`.
-3. For each annotation `(k, v)` — including built-ins `$all`,
+4. For each annotation `(k, v)` — including built-ins `$all`,
    `$creator`, `$createdAtBlock`, `$owner`, `$key`, `$expiration`,
    `$contentType` (values derived from the record):
    - Derive `pair_addr = keccak256("arkiv.pair" || k || 0x00 || v)[:20]`.
    - Read `pair_addr.code` (treat as empty bitmap if absent).
    - Deserialize, add `entity_id`, re-serialize. `SetCode(pair_addr, new_bytes)`.
-4. Encode the entity RLP. `SetCode(entity_address, 0xFE || RLP)`.
+5. Encode the entity RLP with `owner = creator = caller`,
+   `expires_at = current_block + btl`. `SetCode(entity_address, 0xFE || RLP)`.
 
 ### Update
 
-**Contract:** validates ownership + liveness + `Ident32` charset on
-every new attribute name. No storage change.
+**Precompile:** validates the entity exists, the caller is the
+stored owner, the entity has not expired, and `Ident32` charset on
+every new attribute name.
 
 **Op handler:**
 1. Read `entity_id` from `system.slot[keccak256("addr_to_id", entity_address)]`.
@@ -551,8 +524,9 @@ touch them.
 
 ### Extend
 
-**Contract:** validates ownership + liveness + `newExpiresAt >
-stored.expiresAt`. Updates `entities[entityKey].expiresAt`.
+**Precompile:** validates the entity exists, the caller is the
+stored owner, the entity has not expired, `btl > 0`, and
+`newExpiresAt > stored.expiresAt`.
 
 **Op handler:**
 1. Decode the current entity RLP. Read its `expires_at` (old value).
@@ -565,8 +539,9 @@ stored.expiresAt`. Updates `entities[entityKey].expiresAt`.
 
 ### Transfer
 
-**Contract:** validates ownership + liveness + non-zero / different
-`newOwner`. Updates `entities[entityKey].owner`.
+**Precompile:** validates the entity exists, the caller is the
+stored owner, the entity has not expired, and `newOwner` is non-zero
+and different from the current owner.
 
 **Op handler:**
 1. Decode the current entity RLP. Read its `owner` (old value).
@@ -578,8 +553,8 @@ stored.expiresAt`. Updates `entities[entityKey].expiresAt`.
 
 ### Delete
 
-**Contract:** validates ownership + liveness. Removes
-`entities[entityKey]`.
+**Precompile:** validates the entity exists, the caller is the
+stored owner, and the entity has not expired.
 
 **Op handler:**
 1. Read `entity_id` from the system account's `addr_to_id` slot.
@@ -598,12 +573,11 @@ stored.expiresAt`. Updates `entities[entityKey].expiresAt`.
 
 ### Expire
 
-Anyone may call `EntityRegistry.expire(entityKey)` once `block.number
-> expiresAt`. The contract gates on the expiration check, removes the
-entry, and dispatches to the precompile, which executes the same
-state changes as `Delete`. There is no out-of-band housekeeping path;
-expiration is contract-driven so it lives on the canonical execution
-path along with every other state-mutating op.
+Anyone may submit an `Expire` op once `block.number > expiresAt` —
+no ownership check. The precompile validates the entity exists and is
+past its expiry, then dispatches to the same state-changing path as
+`Delete`. There is no out-of-band housekeeping; expiration lives on
+the canonical execution path along with every other state-mutating op.
 
 ---
 
@@ -636,8 +610,7 @@ op actually mutates the ART (only first-entity-into-pair and
 last-entity-out-of-pair do), so the gas formula stays a pure function
 of calldata. ENTITY_KEY user attributes and built-in-key ART writes
 (`$owner` on Transfer, `$expiration` on Extend, etc.) are not
-included in this count today — a small consensus-safe under-charge
-documented in `precompile.rs:75`.
+included in this count today — a small consensus-safe under-charge.
 
 Per-batch gas is computed before any state changes are applied. On
 out-of-gas the entire call budget is consumed (matching EVM OOG
@@ -653,11 +626,10 @@ precompile to be part of the state-transition function.
 ## 5. Reorg Handling
 
 Op-reth's standard reorg machinery handles every piece of Arkiv
-state: entity accounts, pair accounts, index accounts, the system
-account, and the contract's `entities` mapping all revert via the
-trie. There is no journal table, no Arkiv-side revert handler, no
-notification stream the precompile subscribes to, no out-of-trie
-state to worry about.
+state: entity accounts, pair accounts, index accounts, and the
+system account all revert via the trie. There is no journal table,
+no Arkiv-side revert handler, no notification stream the precompile
+subscribes to, no out-of-trie state to worry about.
 
 The design is reorg-safe by construction: every consensus-critical
 write goes through `EvmInternals` (`set_code` / `set_storage` /
@@ -671,17 +643,17 @@ No fix-up code required.
 ```
 Trie (committed in stateRoot):
 
-  EntityRegistry contract  (0x4400…0044):
-    storage:
-      nonces[sender]                                        → uint32
-      entities[entityKey]                                   → (owner, expiresAt)
+  Arkiv precompile target  (ARKIV_ADDRESS = 0x4400…0044):
+    No genesis entry. Programmatic registration via custom EvmFactory.
+    All CALLs to this address land on the native precompile, not on bytecode.
 
-  System account  (0x4400…0046):
-    nonce                                                   → 1
+  System account  (entitydb-internal, address = 0x4400…0046):
+    nonce                                                   → 1   (lazily set on first write)
     storage:
       slot[keccak256("entity_count")]                       → uint64
-      slot[keccak256("id_to_addr", uint64_id)]              → entity_address
-      slot[keccak256("addr_to_id", entity_address)]         → uint64_id
+      slot[keccak256("id_to_addr"  || uint64_id)]           → entity_address
+      slot[keccak256("addr_to_id"  || entity_address)]      → uint64_id
+      slot[keccak256("nonces"      || caller)]              → uint32
 
   Entity account  (one per entity; address = entityKey[:20]):
     nonce                                                   → 1
@@ -706,11 +678,6 @@ MDBX (op-reth's environment):
   No custom Arkiv tables.
 ```
 
-Zero custom MDBX tables. No journal table. No `arkiv_stateRoot`
-slot. No content-addressed-bitmap side store (because bitmaps **are**
-content-addressed natively — `codeHash` of a pair account is the
-bitmap content hash by construction).
-
 ### Properties
 
 | Property | This design |
@@ -718,7 +685,7 @@ bitmap content hash by construction).
 | Entity payload committed in trie | Yes — `codeHash` in entity account |
 | Bitmap content committed in trie | Yes — `codeHash` of pair account is bitmap content hash |
 | ART content committed in trie | Yes — `codeHash` of index account is ART content hash |
-| Ownership / lifetime committed in trie | Yes — `entities` mapping in `EntityRegistry` |
+| Ownership / lifetime committed in trie | Yes — owner / `expires_at` are fields in the entity RLP |
 | Custom MDBX tables required | None |
 | Journal / out-of-trie consensus-critical state | None |
 | Third-party proof of entity state | Yes — `eth_getProof` against any retained block |

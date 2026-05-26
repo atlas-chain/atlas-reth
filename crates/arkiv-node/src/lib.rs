@@ -1,15 +1,13 @@
-//! Arkiv node library — op-reth wrapper with the Arkiv predeploys,
-//! custom `EvmFactory` (precompile + system account), and `arkiv_*`
-//! JSON-RPC namespace.
+//! Arkiv node library — op-reth wrapper with the custom `EvmFactory`
+//! (Arkiv precompile) and the `arkiv_*` JSON-RPC namespace.
 
 mod cli;
 pub mod evm;
-mod genesis;
 mod install;
 pub mod precompile;
 pub mod rpc;
+pub mod state_adapter;
 
 pub use cli::ArkivExt;
 pub use evm::ArkivOpNode;
-pub use genesis::has_arkiv_predeploy;
 pub use install::install;

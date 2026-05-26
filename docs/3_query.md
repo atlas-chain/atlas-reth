@@ -42,7 +42,7 @@ The query grammar (lexer + parser in
 `crates/arkiv-entitydb/src/query/`) and the tree-walking interpreter
 live in `arkiv-entitydb`. The RPC layer (`crates/arkiv-node/src/rpc.rs`)
 is a thin shell: take a `StateProvider` snapshot, wrap it in
-`RethStateAdapter`, call `arkiv_entitydb::query::execute`, render
+`ReadOnlyStateAdapter`, call `arkiv_entitydb::query::execute`, render
 matching entities to wire-format `EntityData`, apply pagination.
 
 ---
@@ -150,7 +150,7 @@ and the combinators run at the bitmap layer.
 
 The RPC handler takes an optional `atBlock` (hex number) and routes
 to `provider.history_by_block_number(n)` instead of `provider.latest()`.
-The resulting `StateProvider` is read by `RethStateAdapter` exactly
+The resulting `StateProvider` is read by `ReadOnlyStateAdapter` exactly
 as for the head state. Op-reth's `Bytecodes` table retains old bitmap
 bytes and old ART bytes keyed by hash, so equality and range queries
 at any retained block resolve cleanly.
@@ -209,9 +209,14 @@ to a value the local ART scan also yields.
 For an **ownership / lifetime check**:
 
 ```
-eth_getProof(EntityRegistry, [slot for entities[entityKey]], blockN)
-  →  proves (owner, expiresAt) at blockN
+eth_getProof(entity_address, [], blockN)  →  proves codeHash against stateRoot_N
+eth_getCode (entity_address, blockN)       →  returns RLP bytes
+decode RLP; the `owner` and `expires_at` fields are authoritative
 ```
+
+Owner and expiry live in the entity RLP — the same single
+`eth_getCode` that anchors the payload also anchors ownership and
+lifetime. There is no separate contract-side mapping to prove against.
 
 The L3 `stateRoot` is anchored to L2 and ultimately L1 by the OP
 Stack. Each of the proofs above is a single-level proof against that

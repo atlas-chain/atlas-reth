@@ -1,4 +1,4 @@
-//! Canonical home of the v2 Arkiv state model.
+//! Canonical home of the Arkiv state model.
 //!
 //! Every entity and every annotation bitmap lives in op-reth's standard
 //! world-state trie as an Ethereum account:
@@ -11,9 +11,14 @@
 //!   roaring64 bitmap of entity IDs as `code`. `codeHash` is
 //!   `keccak256(bitmap_bytes)` by construction — every bitmap is
 //!   content-addressed in the trie.
-//! - **System account** at [`SYSTEM_ACCOUNT_ADDRESS`] carries the
-//!   global entity counter and the trie-committed ID ↔ address maps
-//!   as storage slots.
+//! - **System account** (internal — see `SYSTEM_ACCOUNT_ADDRESS`) —
+//!   empty-coded account that hosts the global entity counter, the
+//!   per-caller `nonces` map, and the trie-committed ID ↔ address maps
+//!   as storage slots. Materialised lazily on the first write via
+//!   `StateAdapter::ensure_account_persists` — no genesis presence
+//!   required. Separate from the precompile's registration address
+//!   ([`ARKIV_ADDRESS`]) so the precompile itself stays a programmatic
+//!   registration target with no on-chain dependency.
 //!
 //! Top-level exports:
 //!
@@ -21,7 +26,7 @@
 //!   built-in annotation keys, system-account slot keys.
 //! - [`StateAdapter`] trait — what the op handlers need from the
 //!   underlying state (code + storage R/W). The precompile implements
-//!   this over `EvmInternals`; the [`test_utils::InMemoryAdapter`]
+//!   this over `EvmInternals`; the [`test_utils::InMemoryStateAdapter`]
 //!   (behind the `test-utils` feature) implements it over an
 //!   [`InMemoryStateDb`].
 //! - Op handlers: [`create`], [`update`], [`extend`], [`transfer`],
@@ -39,13 +44,30 @@ pub mod query;
 
 // ─── Canonical addresses ──────────────────────────────────────────────
 
-/// Singleton account that holds the global entity counter
-/// (`entity_count`) and the trie-committed ID ↔ address maps. Pre-
-/// allocated in genesis with `nonce = 1` so EIP-161 doesn't prune it
-/// before the precompile gets a chance to write into it.
+/// Canonical Arkiv address — the address the precompile is registered
+/// at by the custom `EvmFactory`. EOAs / SDKs `CALL` this address with
+/// the `execute(Operation[])` / `nonces(address)` ABI declared by
+/// `IEntityRegistry`. The precompile itself touches no storage on this
+/// address — consensus state lives on the system account.
 ///
-/// `arkiv-genesis` re-exports this constant.
-pub const SYSTEM_ACCOUNT_ADDRESS: Address = Address::new([
+/// Matches the SDK's `ARKIV_ADDRESS` constant. `arkiv-genesis`
+/// re-exports it.
+pub const ARKIV_ADDRESS: Address = Address::new([
+    0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x44,
+]);
+
+/// Address the precompile uses as a storage host — global entity
+/// counter, per-caller `nonces` map, and the trie-committed ID ↔
+/// address maps live here as storage slots. Materialised lazily on
+/// the first storage write via `StateAdapter::ensure_account_persists`
+/// (called from [`bump_nonce`]), which bumps the nonce to 1 so EIP-161
+/// doesn't prune the account at end-of-tx. No genesis allocation
+/// required.
+///
+/// `pub(crate)` — entitydb is the only crate that should touch this
+/// address. External callers go through the op handlers and the
+/// `read_nonce` / `bump_nonce` API.
+pub(crate) const SYSTEM_ACCOUNT_ADDRESS: Address = Address::new([
     0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x46,
 ]);
 
@@ -116,14 +138,20 @@ pub const ANNOT_EXPIRATION: &[u8] = b"$expiration";
 pub const ANNOT_CONTENT_TYPE: &[u8] = b"$contentType";
 
 // ─── System-account storage slots ─────────────────────────────────────
+//
+// All four maps live as storage on [`SYSTEM_ACCOUNT_ADDRESS`]. Slot
+// keys are scoped by a short tag so the keyspaces can't collide.
+// `pub(crate)` so the slot layout stays an entitydb implementation
+// detail — external callers go through [`read_nonce`] / [`bump_nonce`]
+// and the op handlers.
 
 /// `slot[keccak256("entity_count")]` → next `entity_id` (uint64).
-pub fn slot_entity_count() -> B256 {
+pub(crate) fn slot_entity_count() -> B256 {
     keccak256(b"entity_count")
 }
 
 /// `slot[keccak256("id_to_addr" || id_be_bytes)]` → entity_address.
-pub fn slot_id_to_addr(entity_id: u64) -> B256 {
+pub(crate) fn slot_id_to_addr(entity_id: u64) -> B256 {
     let mut buf = [0u8; 10 + 8];
     buf[..10].copy_from_slice(b"id_to_addr");
     buf[10..].copy_from_slice(&entity_id.to_be_bytes());
@@ -131,11 +159,55 @@ pub fn slot_id_to_addr(entity_id: u64) -> B256 {
 }
 
 /// `slot[keccak256("addr_to_id" || entity_address_bytes)]` → uint64 ID.
-pub fn slot_addr_to_id(entity_addr: Address) -> B256 {
+pub(crate) fn slot_addr_to_id(entity_addr: Address) -> B256 {
     let mut buf = [0u8; 10 + 20];
     buf[..10].copy_from_slice(b"addr_to_id");
     buf[10..].copy_from_slice(entity_addr.as_slice());
     keccak256(buf)
+}
+
+/// `slot[keccak256("nonces" || caller_address)]` → uint32 entity-key
+/// minting nonce, returned by the SDK-visible `nonces(address)` view.
+pub(crate) fn slot_nonces(caller: Address) -> B256 {
+    let mut buf = [0u8; 6 + 20];
+    buf[..6].copy_from_slice(b"nonces");
+    buf[6..].copy_from_slice(caller.as_slice());
+    keccak256(buf)
+}
+
+// ─── Public system-state accessors ────────────────────────────────────
+
+/// Read `caller`'s current entity-key minting nonce. Used by the
+/// `nonces(address)` view dispatched from the precompile, and as the
+/// `nonce` input to `entityKey` derivation in CREATE.
+pub fn read_nonce<S: StateAdapter>(state: &mut S, caller: Address) -> Result<u32> {
+    let raw = state.storage(&SYSTEM_ACCOUNT_ADDRESS, slot_nonces(caller))?;
+    Ok(u32::from_be_bytes(raw.0[28..].try_into().unwrap()))
+}
+
+/// Read-then-increment `caller`'s nonce. Returns the value that was
+/// there before the increment (the value to use for the entity-key
+/// derivation that's about to happen).
+///
+/// Also lazily materialises the system account: on the first call
+/// against a fresh chain, `ensure_account_persists` raises the system
+/// account's nonce to 1 so EIP-161 doesn't prune it (and the nonce
+/// slot we're about to write) at end-of-tx. Idempotent on subsequent
+/// calls. This is the only entry point that touches the system
+/// account before any other slot has been written, so it's enough to
+/// run the guard here.
+pub fn bump_nonce<S: StateAdapter>(state: &mut S, caller: Address) -> Result<u32> {
+    state.ensure_account_persists(&SYSTEM_ACCOUNT_ADDRESS)?;
+    let slot = slot_nonces(caller);
+    let raw = state.storage(&SYSTEM_ACCOUNT_ADDRESS, slot)?;
+    let current = u32::from_be_bytes(raw.0[28..].try_into().unwrap());
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| eyre::eyre!("nonce overflow for {caller}"))?;
+    let mut buf = [0u8; 32];
+    buf[28..].copy_from_slice(&next.to_be_bytes());
+    state.set_storage(&SYSTEM_ACCOUNT_ADDRESS, slot, B256::from(buf))?;
+    Ok(current)
 }
 
 // ─── Storage value encodings (for system-account slots) ──────────────
@@ -344,7 +416,7 @@ impl EntityRlp {
 /// Abstract state interface the op handlers run against.
 ///
 /// In production, [`arkiv_node::precompile`] implements this over
-/// revm's `EvmInternals`. For tests, [`test_utils::InMemoryAdapter`]
+/// revm's `EvmInternals`. For tests, [`test_utils::InMemoryStateAdapter`]
 /// implements it over an [`test_utils::InMemoryStateDb`].
 ///
 /// Conventions:
@@ -353,12 +425,19 @@ impl EntityRlp {
 ///   it was previously zero.
 /// - `tombstone_code` clears the code but preserves `nonce = 1` so
 ///   EIP-161 doesn't prune the account.
+/// - `ensure_account_persists` raises the account's nonce to at least
+///   1 so EIP-161 doesn't prune it at end-of-tx. Idempotent. Used by
+///   the entitydb to lazily materialise the system account on its
+///   first storage write — without it, an empty-coded account that
+///   only receives storage writes is still EIP-161-empty (the check
+///   ignores storage) and gets pruned along with its slots.
 pub trait StateAdapter {
     fn code(&mut self, addr: &Address) -> Result<Vec<u8>>;
     fn set_code(&mut self, addr: &Address, code: Vec<u8>) -> Result<()>;
     fn tombstone_code(&mut self, addr: &Address) -> Result<()>;
     fn storage(&mut self, addr: &Address, slot: B256) -> Result<B256>;
     fn set_storage(&mut self, addr: &Address, slot: B256, value: B256) -> Result<()>;
+    fn ensure_account_persists(&mut self, addr: &Address) -> Result<()>;
 }
 
 // ─── Op handlers ──────────────────────────────────────────────────────
@@ -369,7 +448,7 @@ pub trait StateAdapter {
 // the entity-account RLP write.
 
 /// Create a new entity. Allocates a fresh `entity_id`, writes both ID
-/// maps on the system account, populates all built-in + user bitmaps,
+/// maps on the Arkiv account, populates all built-in + user bitmaps,
 /// and writes the entity RLP.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
@@ -530,7 +609,7 @@ pub fn transfer<S: StateAdapter>(
 }
 
 /// Remove an entity. Clears every bitmap entry (built-in + user),
-/// clears both ID-map slots on the system account, and tombstones the
+/// clears both ID-map slots on the Arkiv account, and tombstones the
 /// entity account (`code = nil`, `nonce = 1`).
 #[tracing::instrument(name = "entitydb_delete", level = "debug", skip_all)]
 pub fn delete<S: StateAdapter>(state: &mut S, entity_key: B256) -> Result<()> {
@@ -793,28 +872,20 @@ pub mod test_utils {
         pub fn account_mut(&mut self, addr: &Address) -> &mut AccountState {
             self.accounts.entry(*addr).or_default()
         }
-
-        /// Pre-allocate the system account with `nonce = 1` to mirror
-        /// what genesis does in production.
-        pub fn with_system_account_preallocated() -> Self {
-            let mut me = Self::default();
-            me.account_mut(&SYSTEM_ACCOUNT_ADDRESS).nonce = 1;
-            me
-        }
     }
 
     /// Thin [`StateAdapter`] over a borrowed [`InMemoryStateDb`].
-    pub struct InMemoryAdapter<'a> {
+    pub struct InMemoryStateAdapter<'a> {
         db: &'a mut InMemoryStateDb,
     }
 
-    impl<'a> InMemoryAdapter<'a> {
+    impl<'a> InMemoryStateAdapter<'a> {
         pub fn new(db: &'a mut InMemoryStateDb) -> Self {
             Self { db }
         }
     }
 
-    impl StateAdapter for InMemoryAdapter<'_> {
+    impl StateAdapter for InMemoryStateAdapter<'_> {
         fn code(&mut self, addr: &Address) -> Result<Vec<u8>> {
             Ok(self
                 .db
@@ -854,6 +925,14 @@ pub mod test_utils {
             self.db.account_mut(addr).storage.insert(slot, value);
             Ok(())
         }
+
+        fn ensure_account_persists(&mut self, addr: &Address) -> Result<()> {
+            let acc = self.db.account_mut(addr);
+            if acc.nonce == 0 {
+                acc.nonce = 1;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -862,7 +941,7 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{InMemoryAdapter, InMemoryStateDb};
+    use crate::test_utils::{InMemoryStateAdapter, InMemoryStateDb};
     use alloy_primitives::b256;
 
     // ─── Primitives ──────────────────────────────────────────────────
@@ -937,10 +1016,10 @@ mod tests {
         assert!(EntityRlp::decode_from_code(&bad).is_err());
     }
 
-    // ─── Op handlers (against InMemoryAdapter) ───────────────────────
+    // ─── Op handlers (against InMemoryStateAdapter) ───────────────────────
 
     fn fresh_db() -> InMemoryStateDb {
-        InMemoryStateDb::with_system_account_preallocated()
+        InMemoryStateDb::default()
     }
 
     fn alice() -> Address {
@@ -969,7 +1048,7 @@ mod tests {
         let mut db = fresh_db();
         let key = entity_key_n(0x42);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(
                 &mut state,
                 alice(),
@@ -1025,7 +1104,7 @@ mod tests {
         let mut db = fresh_db();
         let key = entity_key_n(1);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(&mut state, alice(), key, 100, 10, vec![], vec![], vec![], vec![]).unwrap();
             transfer(&mut state, key, 20, bob()).unwrap();
         }
@@ -1043,7 +1122,7 @@ mod tests {
         let mut db = fresh_db();
         let key = entity_key_n(2);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(&mut state, alice(), key, 100, 10, vec![], vec![], vec![], vec![]).unwrap();
             extend(&mut state, key, 20, 500).unwrap();
         }
@@ -1060,7 +1139,7 @@ mod tests {
         let mut db = fresh_db();
         let key = entity_key_n(3);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(
                 &mut state,
                 alice(),
@@ -1106,7 +1185,7 @@ mod tests {
         let key = entity_key_n(4);
         let entity_addr = entity_address(key);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(
                 &mut state,
                 alice(),
@@ -1203,7 +1282,7 @@ mod tests {
         let mut db = fresh_db();
         let val = b"hello".to_vec();
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
         }
         let tree = read_art_raw(&db, b"tag");
@@ -1212,7 +1291,7 @@ mod tests {
 
         // Second insert of same value — bitmap was non-empty, ART unchanged.
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             insert_into_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
         }
         let tree2 = read_art_raw(&db, b"tag");
@@ -1224,21 +1303,21 @@ mod tests {
         let mut db = fresh_db();
         let val = b"hello".to_vec();
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
             insert_into_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
         }
 
         // Remove first entity — bitmap still has entity 1, ART unchanged.
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             remove_from_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
         }
         assert!(!read_art_raw(&db, b"tag").is_empty(), "index should survive while entity 1 remains");
 
         // Remove last entity — bitmap is now empty, index account tombstoned.
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             remove_from_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
         }
         assert!(read_art_raw(&db, b"tag").is_empty(), "index should be empty after last entity removed");
@@ -1250,7 +1329,7 @@ mod tests {
         let mut db_b = fresh_db();
         let key = entity_key_n(5);
         for db in [&mut db_a, &mut db_b] {
-            let mut state = InMemoryAdapter::new(db);
+            let mut state = InMemoryStateAdapter::new(db);
             create(
                 &mut state,
                 alice(),
@@ -1265,11 +1344,11 @@ mod tests {
             .unwrap();
         }
         {
-            let mut state = InMemoryAdapter::new(&mut db_a);
+            let mut state = InMemoryStateAdapter::new(&mut db_a);
             delete(&mut state, key).unwrap();
         }
         {
-            let mut state = InMemoryAdapter::new(&mut db_b);
+            let mut state = InMemoryStateAdapter::new(&mut db_b);
             expire(&mut state, key).unwrap();
         }
         // Equal: both paths produce the same account map.

@@ -2,22 +2,24 @@
 
 An [op-reth](https://github.com/ethereum-optimism/optimism)-derived
 execution node for the **Arkiv** chain, plus operator tooling. Arkiv is
-an OP-stack L2/L3 with two predeploys (`EntityRegistry` at
-`0x4400…0044` and a singleton system account at `0x4400…0046`) and one
-in-process extension to op-reth: a custom `EvmFactory` that registers
-the **Arkiv precompile** into revm's `PrecompilesMap` at `0x4400…0045`.
-Entity payloads, the annotation index (per-pair roaring64 bitmaps), and
-the global ID/counter maps all live in the L3 state trie as Ethereum
-accounts — committed in `stateRoot`. There is no external indexer
-process and no out-of-trie state.
+an OP-stack L2/L3 with one in-process extension to op-reth: a custom
+`EvmFactory` that registers the **Arkiv precompile** at `ARKIV_ADDRESS`
+(`0x4400…0044`) into revm's `PrecompilesMap`. EOAs and SDKs `CALL` that
+address with the same `execute(Operation[])` / `nonces(address)` ABI a
+Solidity contract would expose. Entity payloads, the annotation index
+(per-pair roaring64 bitmaps), the Tier-2 ART range index, and the
+global counter / nonces / ID maps all live in the L3 state trie as
+Ethereum accounts — committed in `stateRoot`. No external indexer
+process, no out-of-trie state.
 
 The binary serves both write and read paths:
 
-- **Writes** go through `EntityRegistry.execute(Operation[])`. The
-  contract validates ownership, liveness, and attribute-name charset
-  (`Ident32`), then `CALL`s the precompile, which decodes the batch,
-  charges gas, and mutates entity / pair / system-account state via
-  revm's journaled state.
+- **Writes** target `ARKIV_ADDRESS` with calldata for
+  `execute(Operation[])`. The precompile decodes the batch, validates
+  ownership / liveness / `Ident32` charset, charges gas, mutates
+  entity / pair / index account state plus the storage of an
+  internally-managed system account (materialised lazily by
+  `arkiv-entitydb`), and emits an `EntityOperation` event per op.
 - **Reads** are served by the `arkiv_*` JSON-RPC namespace
   (`arkiv_query`, `arkiv_getEntityCount`, `arkiv_getBlockTiming`)
   backed entirely by local trie state. The query language and its
@@ -29,17 +31,30 @@ The binary serves both write and read paths:
                   │                                                  │
                   │   revm + ArkivOpEvmFactory                       │
    user tx ──────►│   └─► ArkivPrecompile ──► trie state             │
-                  │                           (entity / pair /       │
-                  │                            system accounts)      │
+                  │      (at ARKIV_ADDRESS)   (entity / pair /       │
+                  │                            index accounts +      │
+                  │                            system-account slots) │
                   │                                                  │
    user query ───►│   arkiv_* RPC (local reads via arkiv-entitydb)   │
                   └──────────────────────────────────────────────────┘
 ```
 
-The query language today is the **equality family** (`=`, `!=`, `IN`,
-`NOT IN`, `&&`, `||`, `NOT`, `*` / `$all`). Range and glob queries
-(`<`, `>`, `~`) need an ordered sibling index over `(annot_key,
-annot_val)` pairs that isn't built yet — they're parse errors.
+The chain has a single public address — `ARKIV_ADDRESS = 0x4400…0044`,
+the precompile registration target. No genesis allocation is required
+to run the binary; the custom `EvmFactory` activates the precompile
+programmatically.
+
+Internally, `arkiv-entitydb` uses a second fixed address as a storage
+host for per-caller nonces, the global entity counter, and the
+ID ↔ address maps. That account is **materialised lazily on the first
+op** — the entitydb crate bumps its nonce to 1 the first time it
+touches the account so EIP-161 doesn't prune the storage. The address
+is `pub(crate)` in entitydb; consumers of the workspace never see it.
+
+The query language covers the **equality family** (`=`, `!=`, `IN`,
+`NOT IN`, `&&`, `||`, `NOT`, `*` / `$all`), **range** (`<`, `>`, `<=`,
+`>=`), and **prefix-glob** (`~`, `!~`). Range and prefix-glob evaluate
+against a Tier-2 ART index account per attribute key.
 
 ---
 
@@ -48,8 +63,8 @@ annot_val)` pairs that isn't built yet — they're parse errors.
 | Crate | Role |
 |---|---|
 | `crates/arkiv-node` | Execution-client binary. Hosts the custom `EvmFactory`, the Arkiv precompile, and the `arkiv_*` RPC namespace. |
-| `crates/arkiv-entitydb` | State-model primitives (entity / pair / system layout, RLP, bitmap), the six op handlers (`create` / `update` / `extend` / `transfer` / `delete` / `expire`), and the query language (lexer + parser + tree-walking interpreter). |
-| `crates/arkiv-genesis` | Predeploy address, runtime-bytecode loader, genesis-alloc helpers. |
+| `crates/arkiv-entitydb` | State-model primitives (entity / pair / index account layout, RLP, bitmap, ART), the six op handlers (`create` / `update` / `extend` / `transfer` / `delete` / `expire`), the system-account slot layout + `read_nonce` / `bump_nonce` accessors, and the query language (lexer + parser + tree-walking interpreter). |
+| `crates/arkiv-genesis` | `ARKIV_ADDRESS` re-export and dev-account alloc helpers. |
 | `crates/arkiv-cli` | Operator CLI: submit entity ops, batch ops from JSON, traffic simulator, genesis post-processing. |
 | `e2e` | End-to-end tests against an in-process `ArkivOpNode`. |
 
@@ -59,7 +74,6 @@ External dependencies of note:
 |---|---|---|
 | `reth-optimism-*` | [`ethereum-optimism/optimism`](https://github.com/ethereum-optimism/optimism) | OP-reth runtime, chainspec, primitives. |
 | `reth-*` | [`paradigmxyz/reth`](https://github.com/paradigmxyz/reth) | Node builder, storage API. |
-| `arkiv-bindings` | [`arkiv-contracts`](https://github.com/Arkiv-Network/arkiv-contracts) | ABI types used by `arkiv-cli` for tx submission. (Not used by the node itself — the contract source lives in-tree at `contracts/src/EntityRegistry.sol`.) |
 
 ---
 
@@ -72,9 +86,9 @@ just node-dev
 ```
 
 Assembles an Arkiv dev genesis (chain ID `1337`, 100 dev accounts
-funded, predeploys at `0x4400…0044` / `0x4400…0046`), initialises the
-datadir against it, and launches the node with 2 s auto-mining. HTTP
-RPC on `127.0.0.1:8545`, WebSocket on `127.0.0.1:8546`.
+funded), initialises the datadir against it, and launches the node
+with 2 s auto-mining. HTTP RPC on `127.0.0.1:8545`, WebSocket on
+`127.0.0.1:8546`.
 
 ### Submit operations
 
@@ -122,10 +136,9 @@ just genesis | jq .alloc
 │   ├── arkiv-cli/            # operator CLI
 │   └── arkiv-genesis/        # shared genesis primitives
 ├── contracts/
-│   ├── src/EntityRegistry.sol         # in-tree contract source
-│   └── artifacts/EntityRegistry.runtime.hex   # baked into arkiv-genesis at build
+│   └── src/EntityRegistry.sol     # IEntityRegistry interface — ABI surface for SDK codegen
 ├── e2e/                      # full-pipeline integration tests
-├── chainspec/dev.base.json   # geth-format dev chainspec sans predeploy
+├── chainspec/dev.base.json   # geth-format dev chainspec (dev funding injected at recipe time)
 ├── docs/
 │   ├── 1_overview.md         # high-level orientation
 │   ├── 2_state-model.md      # canonical state model
@@ -141,20 +154,22 @@ just genesis | jq .alloc
 
 ## Running against a real OP chain
 
-For production / testnet deployment the `EntityRegistry` predeploy
-must be in the genesis allocs from block 0:
+The binary is a true drop-in op-reth — no Arkiv-specific genesis
+allocation is required. The precompile is registered programmatically
+by the custom `EvmFactory`, and the system account that hosts the
+precompile's storage is materialised lazily on the first op.
 
 ```bash
 op-deployer apply --intent intent.toml --workdir ./ops     # standard OP genesis
-arkiv-cli inject-predeploy ops/genesis.json                # add predeploys + dev funding
+arkiv-cli inject-predeploy ops/genesis.json                # add dev funding (optional)
 op-reth init --chain ops/genesis.json --datadir ./data
 op-reth node --chain ops/genesis.json --datadir ./data
 ```
 
-`inject-predeploy` reads the input genesis, splices the predeploy runtime
-code + system account + dev-funded accounts into `alloc`, and writes
-back. The same chainspec drives both `init` and `node`, so genesis
-hashes match.
+`inject-predeploy` is now a convenience that only splices dev-funded
+accounts into `alloc` — useful for local dev, optional in production.
+The same chainspec drives both `init` and `node`, so genesis hashes
+match.
 
 See [`docs/4_engineering.md`](docs/4_engineering.md) §2 for the
 genesis-construction rules (Path-A chainspecs, Holocene `extraData`,
@@ -167,13 +182,12 @@ why we don't mutate the chainspec at startup).
 | Doc | What's in it |
 |---|---|
 | [`docs/1_overview.md`](docs/1_overview.md) | High-level orientation: what `arkiv-op-reth` is, system diagram, content-addressed-code principle |
-| [`docs/2_state-model.md`](docs/2_state-model.md) | Canonical state model: entity / pair / index / system accounts, op lifecycle, gas, reorg |
+| [`docs/2_state-model.md`](docs/2_state-model.md) | Canonical state model: entity / pair / index accounts, system-account slots, op lifecycle, gas, reorg |
 | [`docs/3_query.md`](docs/3_query.md) | Query language, evaluation flow, historical reads, verification recipes |
 | [`docs/4_engineering.md`](docs/4_engineering.md) | Crate layout, genesis construction, testing surface, fault-proof story, open questions |
 
 External references:
 
-- EntityRegistry contract: <https://github.com/Arkiv-Network/arkiv-contracts>
 - op-reth: <https://github.com/ethereum-optimism/optimism/tree/develop/rust/op-reth>
 - reth: <https://github.com/paradigmxyz/reth>
 

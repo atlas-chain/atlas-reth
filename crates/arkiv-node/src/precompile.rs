@@ -20,21 +20,21 @@
 //!    constraints) — failures are returned as Solidity-style reverts
 //!    so the SDK's error decoders match v1.
 //! 4. State mutation via [`arkiv_entitydb`]'s op handlers, threaded
-//!    through a [`RevmStateAdapter`] over revm's `EvmInternals`.
+//!    through a [`ReadWriteStateAdapter`](crate::state_adapter::ReadWriteStateAdapter)
+//!    over revm's `EvmInternals`.
 //! 5. Log emission (`EntityOperation`) — addressed at `ARKIV_ADDRESS`
 //!    so the SDK's `eth_getLogs` filter on the SDK constant resolves
 //!    every event.
 
-use alloy_evm::{EvmInternals, precompiles::{DynPrecompile, PrecompileInput}};
+use alloy_evm::precompiles::{DynPrecompile, PrecompileInput};
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, Log, U256, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolEvent, sol};
 use arkiv_entitydb::{ARKIV_ADDRESS, NumericAnnotation, StateAdapter, StringAnnotation};
-use revm::{
-    precompile::{
-        PrecompileError, PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult,
-    },
-    state::Bytecode,
+use revm::precompile::{
+    PrecompileError, PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult,
 };
+
+use crate::state_adapter::ReadWriteStateAdapter;
 
 // ─── ABI mirror of `EntityRegistry.sol` ──────────────────────────────
 //
@@ -187,7 +187,7 @@ fn dispatch_nonces(body: &[u8], input: &mut PrecompileInput<'_>) -> PrecompileRe
         }
     };
     let nonce = {
-        let mut adapter = RevmStateAdapter::new(&mut input.internals);
+        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::read_nonce(&mut adapter, decoded.owner)
             .map_err(|e| PrecompileError::Fatal(format!("arkiv precompile: read nonce: {e}")))?
     };
@@ -302,7 +302,7 @@ fn apply_create(
     let expires_at = current_block.saturating_add(op.btl as u64);
     let (strings, numerics) = convert_attributes(&op.attributes)?;
     let entity_key = {
-        let mut adapter = RevmStateAdapter::new(&mut input.internals);
+        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         let current_nonce = arkiv_entitydb::bump_nonce(&mut adapter, caller)
             .map_err(|e| ApplyError::Fatal(format!("bump nonce: {e}")))?;
         let entity_key = derive_entity_key(chain_id, caller, current_nonce);
@@ -333,7 +333,7 @@ fn apply_update(
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
     let (strings, numerics) = convert_attributes(&op.attributes)?;
     {
-        let mut adapter = RevmStateAdapter::new(&mut input.internals);
+        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::update(
             &mut adapter,
             op.entityKey,
@@ -371,7 +371,7 @@ fn apply_extend(
         ));
     }
     {
-        let mut adapter = RevmStateAdapter::new(&mut input.internals);
+        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::extend(&mut adapter, op.entityKey, current_block, new_expires_at)?;
     }
     emit_entity_op(input, op.entityKey, OP_EXTEND, entity.owner, new_expires_at);
@@ -396,7 +396,7 @@ fn apply_transfer(
         ));
     }
     {
-        let mut adapter = RevmStateAdapter::new(&mut input.internals);
+        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::transfer(&mut adapter, op.entityKey, current_block, op.newOwner)?;
     }
     emit_entity_op(input, op.entityKey, OP_TRANSFER, op.newOwner, entity.expires_at);
@@ -411,7 +411,7 @@ fn apply_delete(
 ) -> Result<(), ApplyError> {
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
     {
-        let mut adapter = RevmStateAdapter::new(&mut input.internals);
+        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::delete(&mut adapter, op.entityKey)?;
     }
     emit_entity_op(input, op.entityKey, OP_DELETE, entity.owner, entity.expires_at);
@@ -439,7 +439,7 @@ fn apply_expire(
         ));
     }
     {
-        let mut adapter = RevmStateAdapter::new(&mut input.internals);
+        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::expire(&mut adapter, op.entityKey)?;
     }
     emit_entity_op(input, op.entityKey, OP_EXPIRE, entity.owner, entity.expires_at);
@@ -550,7 +550,7 @@ fn load_entity(
     entity_key: B256,
 ) -> Result<Option<ExistingEntity>, ApplyError> {
     let entity_addr = arkiv_entitydb::entity_address(entity_key);
-    let mut adapter = RevmStateAdapter::new(&mut input.internals);
+    let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
     let code = adapter.code(&entity_addr)?;
     if code.is_empty() {
         return Ok(None);
@@ -763,87 +763,6 @@ fn convert_attributes(
 /// can't produce nonsense ABI data.
 fn clip_u32(n: u64) -> u32 {
     n.min(u32::MAX as u64) as u32
-}
-
-// ─── StateAdapter over revm's `EvmInternals` ─────────────────────────
-
-struct RevmStateAdapter<'a, 'b> {
-    internals: &'a mut EvmInternals<'b>,
-}
-
-impl<'a, 'b> RevmStateAdapter<'a, 'b> {
-    fn new(internals: &'a mut EvmInternals<'b>) -> Self {
-        Self { internals }
-    }
-
-    /// `set_code` doesn't bump the nonce; new accounts would land with
-    /// `nonce = 0` and EIP-161 would prune them. Force `nonce >= 1`.
-    fn ensure_nonce_at_least_one(&mut self, addr: Address) -> eyre::Result<()> {
-        let nonce = self
-            .internals
-            .load_account_code(addr)
-            .map_err(|e| eyre::eyre!("load_account_code({addr}): {e:?}"))?
-            .data
-            .nonce();
-        if nonce == 0 {
-            self.internals
-                .bump_nonce(addr)
-                .map_err(|e| eyre::eyre!("bump_nonce({addr}): {e:?}"))?;
-        }
-        Ok(())
-    }
-}
-
-impl StateAdapter for RevmStateAdapter<'_, '_> {
-    fn code(&mut self, addr: &Address) -> eyre::Result<Vec<u8>> {
-        let load = self
-            .internals
-            .load_account_code(*addr)
-            .map_err(|e| eyre::eyre!("load_account_code({addr}): {e:?}"))?;
-        Ok(load
-            .data
-            .code()
-            .map(|c| c.original_byte_slice().to_vec())
-            .unwrap_or_default())
-    }
-
-    fn set_code(&mut self, addr: &Address, code: Vec<u8>) -> eyre::Result<()> {
-        let bytecode = Bytecode::new_raw(Bytes::from(code));
-        self.internals
-            .set_code(*addr, bytecode)
-            .map_err(|e| eyre::eyre!("set_code({addr}): {e:?}"))?;
-        self.ensure_nonce_at_least_one(*addr)
-    }
-
-    fn tombstone_code(&mut self, addr: &Address) -> eyre::Result<()> {
-        let bytecode = Bytecode::new_raw(Bytes::new());
-        self.internals
-            .set_code(*addr, bytecode)
-            .map_err(|e| eyre::eyre!("set_code (tombstone, {addr}): {e:?}"))?;
-        self.ensure_nonce_at_least_one(*addr)
-    }
-
-    fn storage(&mut self, addr: &Address, slot: B256) -> eyre::Result<B256> {
-        let key = U256::from_be_bytes(slot.0);
-        let load = self
-            .internals
-            .sload(*addr, key)
-            .map_err(|e| eyre::eyre!("sload({addr}, {slot}): {e:?}"))?;
-        Ok(B256::from(load.data.to_be_bytes()))
-    }
-
-    fn set_storage(&mut self, addr: &Address, slot: B256, value: B256) -> eyre::Result<()> {
-        let key = U256::from_be_bytes(slot.0);
-        let val = U256::from_be_bytes(value.0);
-        self.internals
-            .sstore(*addr, key, val)
-            .map_err(|e| eyre::eyre!("sstore({addr}, {slot}): {e:?}"))?;
-        Ok(())
-    }
-
-    fn ensure_account_persists(&mut self, addr: &Address) -> eyre::Result<()> {
-        self.ensure_nonce_at_least_one(*addr)
-    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────

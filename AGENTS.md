@@ -64,11 +64,12 @@ justfile                    # all dev recipes
 |---|---|
 | Custom `EvmFactory` wrapping `OpEvmFactory<OpTx>` | `crates/arkiv-node/src/evm.rs` |
 | Arkiv precompile (selector dispatch, validation, gas, op dispatch, event emission) | `crates/arkiv-node/src/precompile.rs` |
-| `arkiv_*` RPC namespace + `RethStateAdapter` | `crates/arkiv-node/src/rpc.rs` |
+| `arkiv_*` RPC namespace | `crates/arkiv-node/src/rpc.rs` |
+| `ReadWriteStateAdapter` + `ReadOnlyStateAdapter` (production `StateAdapter` impls) | `crates/arkiv-node/src/state_adapter.rs` |
 | RPC installation hook | `crates/arkiv-node/src/install.rs` |
 | CLI flags + node-builder wiring | `crates/arkiv-node/src/{cli,main}.rs` |
 | Entity / pair / index layout, RLP, bitmap, ART | `crates/arkiv-entitydb/src/lib.rs` |
-| `StateAdapter` trait + `InMemoryAdapter` (test-utils feature) | `crates/arkiv-entitydb/src/lib.rs` |
+| `StateAdapter` trait + `InMemoryStateAdapter` (test-utils feature) | `crates/arkiv-entitydb/src/lib.rs` |
 | Op handlers (`create` / `update` / `extend` / `transfer` / `delete` / `expire`) | `crates/arkiv-entitydb/src/lib.rs` |
 | System-state API (`read_nonce` / `bump_nonce`) + `pub(crate)` slot layout | `crates/arkiv-entitydb/src/lib.rs` |
 | Query lexer / parser / AST / interpreter | `crates/arkiv-entitydb/src/query/` |

@@ -148,7 +148,7 @@ The user-facing entry point and the EVM-side adapter to
   `input.caller` is by construction the EOA that signed the tx.
 - **Gas accounting.** Computed from calldata only (§4). Charged
   up-front; halt `OutOfGas` if the budget doesn't cover the batch.
-- **Dispatch.** Wraps `EvmInternals` in a `RevmStateAdapter`
+- **Dispatch.** Wraps `EvmInternals` in a `ReadWriteStateAdapter`
   implementing `arkiv_entitydb::StateAdapter`, converts ABI types
   into entitydb's value types, and calls the matching
   `arkiv_entitydb::{create, update, extend, transfer, delete, expire}`.
@@ -188,13 +188,13 @@ required.
 The trait has two production implementations and one test
 implementation:
 
-- `arkiv_node::precompile::RevmStateAdapter` — write path. Wraps
-  `&mut EvmInternals` and goes through the journal so reverts roll
-  back cleanly on dispatch failure.
-- `arkiv_node::rpc::RethStateAdapter` — read path. Wraps a
-  `StateProviderBox` from reth; mutating methods bail (unreachable
+- `arkiv_node::state_adapter::ReadWriteStateAdapter` — write path.
+  Wraps `&mut EvmInternals` and goes through the journal so reverts
+  roll back cleanly on dispatch failure.
+- `arkiv_node::state_adapter::ReadOnlyStateAdapter` — read path. Wraps
+  a `StateProviderBox` from reth; mutating methods bail (unreachable
   from the read path).
-- `arkiv_entitydb::test_utils::InMemoryAdapter` — `cfg(test-utils)`.
+- `arkiv_entitydb::test_utils::InMemoryStateAdapter` — `cfg(test-utils)`.
   Drives the op handlers in unit tests without a revm context.
 
 The op handlers (`create` / `update` / `extend` / `transfer` /

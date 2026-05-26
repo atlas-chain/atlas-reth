@@ -8,14 +8,16 @@ use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use arkiv_entitydb::query::{Page, PageParams, execute};
-use arkiv_entitydb::{EntityRlp, StateAdapter, all_entities};
+use arkiv_entitydb::{EntityRlp, all_entities};
 use async_trait::async_trait;
 use eyre::Result;
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::error::{ErrorObject, ErrorObjectOwned, INTERNAL_ERROR_CODE};
-use reth_storage_api::{HeaderProvider, StateProvider, StateProviderBox, StateProviderFactory};
+use reth_storage_api::{HeaderProvider, StateProviderBox, StateProviderFactory};
 use serde::{Deserialize, Serialize};
+
+use crate::state_adapter::ReadOnlyStateAdapter;
 
 const DEFAULT_PAGE_SIZE: u64 = 100;
 const MAX_PAGE_SIZE: u64 = 200;
@@ -183,7 +185,7 @@ where
     async fn get_entity_count(&self) -> RpcResult<u64> {
         let provider = self.provider.clone();
         tokio::task::spawn_blocking(move || -> Result<u64> {
-            let mut adapter = RethStateAdapter::new(provider.latest()?);
+            let mut adapter = ReadOnlyStateAdapter::new(provider.latest()?);
             Ok(all_entities(&mut adapter)?.len())
         })
         .await
@@ -223,7 +225,7 @@ fn run_query<P: StateProviderFactory>(
     options: &QueryOptions,
 ) -> Result<QueryResponse> {
     let (state, block_number) = snapshot_for(&provider, options.at_block)?;
-    let mut adapter = RethStateAdapter::new(state);
+    let mut adapter = ReadOnlyStateAdapter::new(state);
 
     let params = PageParams {
         page_size: options
@@ -407,54 +409,3 @@ fn internal_err(msg: String) -> ErrorObjectOwned {
     ErrorObject::owned(INTERNAL_ERROR_CODE, msg, None::<()>)
 }
 
-// ── Read-only StateAdapter over reth's StateProvider ─────────────────
-
-/// `StateAdapter` impl backed by a reth [`StateProvider`] snapshot.
-/// Used by the query RPC to drive [`arkiv_entitydb`]'s evaluator over
-/// committed state. Mutating methods bail — they shouldn't be reached
-/// from the read-only query path.
-pub struct RethStateAdapter {
-    state: StateProviderBox,
-}
-
-impl RethStateAdapter {
-    pub fn new(state: StateProviderBox) -> Self {
-        Self { state }
-    }
-}
-
-impl StateAdapter for RethStateAdapter {
-    fn code(&mut self, addr: &Address) -> Result<Vec<u8>> {
-        Ok(self
-            .state
-            .account_code(addr)
-            .map_err(|e| eyre::eyre!("account_code({addr}): {e}"))?
-            .map(|bc| bc.original_bytes().to_vec())
-            .unwrap_or_default())
-    }
-
-    fn storage(&mut self, addr: &Address, slot: B256) -> Result<B256> {
-        let v = self
-            .state
-            .storage(*addr, slot)
-            .map_err(|e| eyre::eyre!("storage({addr}, {slot}): {e}"))?
-            .unwrap_or(U256::ZERO);
-        Ok(B256::from(v.to_be_bytes()))
-    }
-
-    fn set_code(&mut self, _addr: &Address, _code: Vec<u8>) -> Result<()> {
-        eyre::bail!("RethStateAdapter is read-only: set_code called from query path")
-    }
-
-    fn tombstone_code(&mut self, _addr: &Address) -> Result<()> {
-        eyre::bail!("RethStateAdapter is read-only: tombstone_code called from query path")
-    }
-
-    fn set_storage(&mut self, _addr: &Address, _slot: B256, _value: B256) -> Result<()> {
-        eyre::bail!("RethStateAdapter is read-only: set_storage called from query path")
-    }
-
-    fn ensure_account_persists(&mut self, _addr: &Address) -> Result<()> {
-        eyre::bail!("RethStateAdapter is read-only: ensure_account_persists called from query path")
-    }
-}

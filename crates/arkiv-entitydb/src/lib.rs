@@ -26,7 +26,7 @@
 //!   built-in annotation keys, system-account slot keys.
 //! - [`StateAdapter`] trait — what the op handlers need from the
 //!   underlying state (code + storage R/W). The precompile implements
-//!   this over `EvmInternals`; the [`test_utils::InMemoryAdapter`]
+//!   this over `EvmInternals`; the [`test_utils::InMemoryStateAdapter`]
 //!   (behind the `test-utils` feature) implements it over an
 //!   [`InMemoryStateDb`].
 //! - Op handlers: [`create`], [`update`], [`extend`], [`transfer`],
@@ -416,7 +416,7 @@ impl EntityRlp {
 /// Abstract state interface the op handlers run against.
 ///
 /// In production, [`arkiv_node::precompile`] implements this over
-/// revm's `EvmInternals`. For tests, [`test_utils::InMemoryAdapter`]
+/// revm's `EvmInternals`. For tests, [`test_utils::InMemoryStateAdapter`]
 /// implements it over an [`test_utils::InMemoryStateDb`].
 ///
 /// Conventions:
@@ -875,17 +875,17 @@ pub mod test_utils {
     }
 
     /// Thin [`StateAdapter`] over a borrowed [`InMemoryStateDb`].
-    pub struct InMemoryAdapter<'a> {
+    pub struct InMemoryStateAdapter<'a> {
         db: &'a mut InMemoryStateDb,
     }
 
-    impl<'a> InMemoryAdapter<'a> {
+    impl<'a> InMemoryStateAdapter<'a> {
         pub fn new(db: &'a mut InMemoryStateDb) -> Self {
             Self { db }
         }
     }
 
-    impl StateAdapter for InMemoryAdapter<'_> {
+    impl StateAdapter for InMemoryStateAdapter<'_> {
         fn code(&mut self, addr: &Address) -> Result<Vec<u8>> {
             Ok(self
                 .db
@@ -941,7 +941,7 @@ pub mod test_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{InMemoryAdapter, InMemoryStateDb};
+    use crate::test_utils::{InMemoryStateAdapter, InMemoryStateDb};
     use alloy_primitives::b256;
 
     // ─── Primitives ──────────────────────────────────────────────────
@@ -1016,7 +1016,7 @@ mod tests {
         assert!(EntityRlp::decode_from_code(&bad).is_err());
     }
 
-    // ─── Op handlers (against InMemoryAdapter) ───────────────────────
+    // ─── Op handlers (against InMemoryStateAdapter) ───────────────────────
 
     fn fresh_db() -> InMemoryStateDb {
         InMemoryStateDb::default()
@@ -1048,7 +1048,7 @@ mod tests {
         let mut db = fresh_db();
         let key = entity_key_n(0x42);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(
                 &mut state,
                 alice(),
@@ -1104,7 +1104,7 @@ mod tests {
         let mut db = fresh_db();
         let key = entity_key_n(1);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(&mut state, alice(), key, 100, 10, vec![], vec![], vec![], vec![]).unwrap();
             transfer(&mut state, key, 20, bob()).unwrap();
         }
@@ -1122,7 +1122,7 @@ mod tests {
         let mut db = fresh_db();
         let key = entity_key_n(2);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(&mut state, alice(), key, 100, 10, vec![], vec![], vec![], vec![]).unwrap();
             extend(&mut state, key, 20, 500).unwrap();
         }
@@ -1139,7 +1139,7 @@ mod tests {
         let mut db = fresh_db();
         let key = entity_key_n(3);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(
                 &mut state,
                 alice(),
@@ -1185,7 +1185,7 @@ mod tests {
         let key = entity_key_n(4);
         let entity_addr = entity_address(key);
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             create(
                 &mut state,
                 alice(),
@@ -1282,7 +1282,7 @@ mod tests {
         let mut db = fresh_db();
         let val = b"hello".to_vec();
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
         }
         let tree = read_art_raw(&db, b"tag");
@@ -1291,7 +1291,7 @@ mod tests {
 
         // Second insert of same value — bitmap was non-empty, ART unchanged.
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             insert_into_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
         }
         let tree2 = read_art_raw(&db, b"tag");
@@ -1303,21 +1303,21 @@ mod tests {
         let mut db = fresh_db();
         let val = b"hello".to_vec();
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
             insert_into_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
         }
 
         // Remove first entity — bitmap still has entity 1, ART unchanged.
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             remove_from_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
         }
         assert!(!read_art_raw(&db, b"tag").is_empty(), "index should survive while entity 1 remains");
 
         // Remove last entity — bitmap is now empty, index account tombstoned.
         {
-            let mut state = InMemoryAdapter::new(&mut db);
+            let mut state = InMemoryStateAdapter::new(&mut db);
             remove_from_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
         }
         assert!(read_art_raw(&db, b"tag").is_empty(), "index should be empty after last entity removed");
@@ -1329,7 +1329,7 @@ mod tests {
         let mut db_b = fresh_db();
         let key = entity_key_n(5);
         for db in [&mut db_a, &mut db_b] {
-            let mut state = InMemoryAdapter::new(db);
+            let mut state = InMemoryStateAdapter::new(db);
             create(
                 &mut state,
                 alice(),
@@ -1344,11 +1344,11 @@ mod tests {
             .unwrap();
         }
         {
-            let mut state = InMemoryAdapter::new(&mut db_a);
+            let mut state = InMemoryStateAdapter::new(&mut db_a);
             delete(&mut state, key).unwrap();
         }
         {
-            let mut state = InMemoryAdapter::new(&mut db_b);
+            let mut state = InMemoryStateAdapter::new(&mut db_b);
             expire(&mut state, key).unwrap();
         }
         // Equal: both paths produce the same account map.

@@ -66,10 +66,10 @@ runs against an abstract `StateAdapter` trait. Contains:
   system-account address.
 - **`StateAdapter` trait.** `code` / `set_code` / `tombstone_code` /
   `storage` / `set_storage` / `ensure_account_persists`. Implemented
-  in production by `RevmStateAdapter` (precompile path, journaled
-  writes) and `RethStateAdapter` (RPC read path, against a
+  in production by `ReadWriteStateAdapter` (precompile path, journaled
+  writes) and `ReadOnlyStateAdapter` (RPC read path, against a
   `StateProvider` snapshot). The `test-utils` feature exposes
-  `InMemoryAdapter` for unit tests.
+  `InMemoryStateAdapter` for unit tests.
   `ensure_account_persists` bumps the account's nonce to ≥ 1 so
   EIP-161 doesn't prune it at end-of-tx. Idempotent. Used by
   `bump_nonce` to lazily materialise the system account on its first
@@ -112,10 +112,10 @@ The execution-client binary. A thin wrapper around
   per-op validation (ownership, expiration, `Ident32` charset),
   Solidity-style revert encoding with v1 error selectors,
   `EntityOperation` event emission, gas accounting (pure function of
-  op shape), `RevmStateAdapter` over `EvmInternals`, op dispatch
+  op shape), `ReadWriteStateAdapter` over `EvmInternals`, op dispatch
   into `arkiv-entitydb`.
 - `rpc.rs` — `arkiv_*` JSON-RPC namespace + wire-format types.
-  `RethStateAdapter` wraps a `StateProvider` for read-only state. The
+  `ReadOnlyStateAdapter` wraps a `StateProvider` for read-only state. The
   query handler is a thin shell over `arkiv_entitydb::query::execute`.
 - `install.rs` — `extend_rpc_modules` hook registering the `arkiv_*`
   namespace.
@@ -247,9 +247,9 @@ binary runs against any valid OP-stack chainspec.
 | Layer | Where |
 |---|---|
 | `arkiv-genesis` unit tests | `crates/arkiv-genesis/src/lib.rs` (`#[cfg(test)]`) — alloc shape, signer derivation. |
-| State model + op handlers | `crates/arkiv-entitydb/src/lib.rs` (`#[cfg(test)]`) — against `InMemoryAdapter`. |
+| State model + op handlers | `crates/arkiv-entitydb/src/lib.rs` (`#[cfg(test)]`) — against `InMemoryStateAdapter`. |
 | Query lexer + parser unit tests | `crates/arkiv-entitydb/src/query/{lexer,parser}.rs`. |
-| Query interpreter integration | `crates/arkiv-entitydb/tests/query_eval.rs` — parse + evaluate end-to-end against `InMemoryAdapter`. |
+| Query interpreter integration | `crates/arkiv-entitydb/tests/query_eval.rs` — parse + evaluate end-to-end against `InMemoryStateAdapter`. |
 | Precompile unit tests | `crates/arkiv-node/src/precompile.rs` — ABI round-trip, gas constants, attribute conversion, `Ident32` validation. |
 | Direct-revm CREATE profile | `crates/arkiv-node/tests/profile_create_op_direct.rs` — chrome-trace per-tx workload via `ArkivOpEvmFactory::create_evm`. |
 | Full pipeline e2e | `e2e/tests/full_pipeline_e2e.rs` — boots an in-process `ArkivOpNode`, walks every op type + every query construct + atBlock + pagination + non-owner revert. |
@@ -272,7 +272,7 @@ binary runs against any valid OP-stack chainspec.
 | Owner / expiry / `Ident32` charset validated in the precompile | One validation surface; SDK clients depend on specific revert selectors (`NotOwner`, `Ident32InvalidByte`, …) which the precompile emits. |
 | Owner / `expires_at` live only in the entity RLP | Single source of truth — no separate contract-side mapping to keep in sync with the RLP. The precompile reads them from the RLP for both authorization and event emission. |
 | System-state slot layout is `pub(crate)` in entitydb | The storage layout is an entitydb implementation detail; external callers (the precompile, tests) go through `read_nonce` / `bump_nonce` and the op handlers. |
-| `arkiv-entitydb` has no revm dep | Reusable for testing (against `InMemoryAdapter`) and for the read path (against `RethStateAdapter`); op handlers only talk to a `StateAdapter` trait. |
+| `arkiv-entitydb` has no revm dep | Reusable for testing (against `InMemoryStateAdapter`) and for the read path (against `ReadOnlyStateAdapter`); op handlers only talk to a `StateAdapter` trait. |
 | Path-A chainspec | `op-reth init` and `op-reth node` need to agree on genesis hash when reading the same JSON file. |
 | `inject-predeploy` as a separate post-process | Composes with op-deployer output rather than forking it; same tool serves dev and prod. |
 | `arkiv-genesis` as its own crate | Both binaries need the same constants; lifting them out avoids cross-bin deps. |

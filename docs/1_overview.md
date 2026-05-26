@@ -15,15 +15,15 @@ things:
 
 The precompile owns per-op validation (ownership, expiration,
 `Ident32` charset), `EntityOperation` event emission, gas accounting,
-and dispatch into `arkiv-entitydb`. The chain's genesis must include a
-single empty-coded account at `SYSTEM_ACCOUNT_ADDRESS`
-(`0x4400000000000000000000000000000000000046`) with `nonce=1` — it
-hosts the precompile's consensus storage (per-caller nonces, the
-global entity counter, the ID ↔ address maps). The `nonce=1` keeps
-EIP-161 from pruning the account before the precompile writes its
-first slot. `arkiv-cli inject-predeploy` adds the system account when
-post-processing a standard OP genesis. `ARKIV_ADDRESS` itself has no
-genesis entry — the precompile is registered programmatically.
+and dispatch into `arkiv-entitydb`.
+
+Internally, `arkiv-entitydb` uses a fixed entitydb-private address as
+a storage host for per-caller nonces, the global entity counter, and
+the ID ↔ address maps. That account is **materialised lazily on the
+first op**: the entitydb crate bumps its nonce to 1 the first time it
+touches the account via `StateAdapter::ensure_account_persists`, so
+EIP-161 doesn't prune the storage at end-of-tx. No genesis allocation
+is required.
 
 Every entity, every annotation index, and every counter lives inside
 op-reth's standard world-state trie, committed in the L3 `stateRoot`.
@@ -31,10 +31,10 @@ Reads are served by the `arkiv_*` namespace backed entirely by local
 state. There is no EntityRegistry contract, no external indexer
 process, no JSON-RPC bridge, no ExEx, no out-of-trie state.
 
-The binary is a **drop-in op-reth**: against a chainspec without the
-system account it refuses to start. Against a chainspec containing it,
-the binary installs the custom `EvmFactory` + the `arkiv_*` RPC and
-serves the full Arkiv surface.
+The binary is a **drop-in op-reth**: any valid OP-stack chainspec
+works. The custom `EvmFactory` installs the Arkiv precompile, the
+`arkiv_*` RPC namespace exposes the read path, and the system account
+is created on the first write.
 
 ---
 
@@ -47,7 +47,7 @@ serves the full Arkiv surface.
                   │   ┌──────────────────────────────────────────┐   │
    user tx ──────►│   │ revm  ─── ArkivOpEvmFactory inserts ─────┼─► trie state
                   │   │       │   ArkivPrecompile at ARKIV_ADDR  │   │   entity / pair / index
-                  │   │       │   into PrecompilesMap            │   │   accounts + SYSTEM_ACCOUNT
+                  │   │       │   into PrecompilesMap            │   │   accounts + system-account
                   │   │       └──► dispatches into arkiv-entitydb│   │   storage (counter, nonces,
                   │   └──────────────────────────────────────────┘   │   ID maps) — committed in stateRoot
                   │                                                  │
@@ -88,9 +88,10 @@ bytes are committed in `stateRoot`, clients can prove authenticity
 with `eth_getProof` + `eth_getCode`, and queries against any retained
 historical block resolve by routing reads through that block's state.
 
-The system account uses ordinary storage slots (not `code`) for the
-global counter / nonces / ID maps — those values need slot-keyed
-random access, not content-addressing.
+The system account (managed internally by `arkiv-entitydb`) uses
+ordinary storage slots (not `code`) for the global counter / nonces /
+ID maps — those values need slot-keyed random access, not
+content-addressing.
 
 ---
 

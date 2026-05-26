@@ -2,19 +2,13 @@
 //!
 //! Provides:
 //! - [`ARKIV_ADDRESS`] (`0x44…0044`) — the precompile's registration
-//!   address. Has no genesis presence; the custom `EvmFactory`
-//!   registers the precompile here programmatically.
-//! - [`SYSTEM_ACCOUNT_ADDRESS`] (`0x44…0046`) — pre-allocated empty
-//!   account that hosts the precompile's consensus state (nonces,
-//!   entity counter, ID maps).
-//! - a convenience helper that builds the genesis `alloc` for a
-//!   self-contained Arkiv dev chain.
+//!   address. No genesis presence; the custom `EvmFactory` registers
+//!   the precompile here programmatically.
+//! - A convenience helper that builds the dev-funding `alloc`.
 //!
 //! Used by:
-//!   - `arkiv-node`: chainspec assembly at startup or build time,
-//!     system-account detection.
 //!   - `arkiv-cli inject-predeploy`: post-processing op-deployer output
-//!     to splice the system account into a standard OP genesis JSON.
+//!     to splice dev-funded accounts into a standard OP genesis JSON.
 
 // Re-export so consumers (e.g. `arkiv-cli inject-predeploy`) don't need to
 // take a direct dep on alloy-genesis.
@@ -29,13 +23,6 @@ use std::collections::BTreeMap;
 /// `nonces(address)` ABI declared by `IEntityRegistry`. No genesis
 /// allocation is required — registration is programmatic.
 pub use arkiv_entitydb::ARKIV_ADDRESS;
-
-/// System account that holds the precompile's consensus state — global
-/// entity counter, per-caller `nonces` map, and the trie-committed
-/// ID ↔ address maps. Pre-allocated in genesis with empty code and
-/// `nonce = 1` so EIP-161 doesn't prune it before the precompile gets a
-/// chance to write into it.
-pub use arkiv_entitydb::SYSTEM_ACCOUNT_ADDRESS;
 
 /// First account derived from [`ARKIV_DEV_MNEMONIC`] at standard BIP-44
 /// path `m/44'/60'/0'/0/0`. Kept as a `const` so callers that only need
@@ -72,18 +59,7 @@ pub fn genesis_alloc() -> Result<BTreeMap<Address, GenesisAccount>> {
     for (addr, acc) in dev_funding_alloc(ARKIV_DEV_ACCOUNT_COUNT, arkiv_dev_balance_wei())? {
         alloc.insert(addr, acc);
     }
-    alloc.insert(SYSTEM_ACCOUNT_ADDRESS, system_account());
     Ok(alloc)
-}
-
-/// `GenesisAccount` for the Arkiv system account. Empty code, empty
-/// storage, `nonce = 1` so EIP-161 doesn't prune it before the
-/// precompile writes its first slot.
-pub fn system_account() -> GenesisAccount {
-    GenesisAccount {
-        nonce: Some(1),
-        ..Default::default()
-    }
 }
 
 /// Derive `count` `PrivateKeySigner`s from [`ARKIV_DEV_MNEMONIC`] at
@@ -159,18 +135,12 @@ mod tests {
     }
 
     #[test]
-    fn genesis_alloc_includes_system_account_and_funding() {
+    fn genesis_alloc_has_dev_funding_only() {
         let alloc = genesis_alloc().expect("alloc");
-        assert!(alloc.contains_key(&SYSTEM_ACCOUNT_ADDRESS));
-        assert_eq!(
-            alloc.get(&SYSTEM_ACCOUNT_ADDRESS).unwrap().nonce,
-            Some(1),
-            "system account must have nonce=1 to survive EIP-161",
-        );
         assert!(
             !alloc.contains_key(&ARKIV_ADDRESS),
             "ARKIV_ADDRESS is a programmatic precompile target; no genesis presence",
         );
-        assert_eq!(alloc.len(), ARKIV_DEV_ACCOUNT_COUNT + 1);
+        assert_eq!(alloc.len(), ARKIV_DEV_ACCOUNT_COUNT);
     }
 }

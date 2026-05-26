@@ -648,18 +648,12 @@ fn resolve_payload(payload: Option<&str>, size: Option<usize>) -> Result<Bytes> 
 /// Output is pretty-printed back to disk (overwriting the input by
 /// default, or to `out` if specified).
 fn inject_predeploy(input: &std::path::Path, out: Option<&std::path::Path>) -> Result<()> {
-    use arkiv_genesis::{SYSTEM_ACCOUNT_ADDRESS, genesis_alloc};
+    use arkiv_genesis::genesis_alloc;
 
     let raw = std::fs::read_to_string(input)
         .map_err(|e| eyre::eyre!("failed to read {}: {}", input.display(), e))?;
     let mut genesis: arkiv_genesis::Genesis = serde_json::from_str(&raw)
         .map_err(|e| eyre::eyre!("failed to parse {} as genesis JSON: {}", input.display(), e))?;
-
-    if genesis.alloc.contains_key(&SYSTEM_ACCOUNT_ADDRESS) {
-        eprintln!(
-            "warning: alloc already contains an entry at {SYSTEM_ACCOUNT_ADDRESS}; overwriting"
-        );
-    }
 
     let arkiv_alloc = genesis_alloc()?;
     let account_count = arkiv_alloc.len();
@@ -673,8 +667,8 @@ fn inject_predeploy(input: &std::path::Path, out: Option<&std::path::Path>) -> R
         .map_err(|e| eyre::eyre!("failed to write {}: {}", dest.display(), e))?;
 
     eprintln!(
-        "injected Arkiv system account + {} dev accounts into {}",
-        account_count - 1,
+        "injected {} Arkiv dev accounts into {}",
+        account_count,
         dest.display(),
     );
     Ok(())

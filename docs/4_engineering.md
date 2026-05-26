@@ -28,7 +28,7 @@ crates/
   arkiv-node/         # binary + custom EvmFactory + Arkiv precompile + arkiv_* RPC
   arkiv-entitydb/     # state model + op handlers + system-state API + query language
   arkiv-cli/          # operator CLI: entity ops, batches, simulate, inject-predeploy
-  arkiv-genesis/      # shared lib: ARKIV_ADDRESS + SYSTEM_ACCOUNT_ADDRESS + alloc helpers
+  arkiv-genesis/      # shared lib: ARKIV_ADDRESS re-export + dev-funding alloc helpers
 e2e/                  # full-pipeline integration tests
 contracts/
   src/EntityRegistry.sol    # IEntityRegistry interface — ABI surface for SDK codegen (no deployed bytecode)
@@ -45,16 +45,15 @@ Pure library. Owns:
 
 - `ARKIV_ADDRESS` (`0x4400…0044`) — precompile registration target.
   Re-exported from `arkiv-entitydb`. No genesis allocation.
-- `SYSTEM_ACCOUNT_ADDRESS` (`0x4400…0046`) — system-account address.
-  Re-exported from `arkiv-entitydb`. Pre-allocated at `nonce=1` by
-  `genesis_alloc()`.
 - `ARKIV_DEV_MNEMONIC`, `DEV_ADDRESS`, `ARKIV_DEV_ACCOUNT_COUNT` — the
   hardhat-compatible dev mnemonic and the 100 pre-funded dev accounts
   derived from it.
-- `system_account() -> GenesisAccount` — empty-code, `nonce=1` entry
-  for the system account.
-- `genesis_alloc()`, `dev_funding_alloc(...)` — assemble system
-  account + dev-funding entries for splicing into a `Genesis.alloc`.
+- `genesis_alloc()`, `dev_funding_alloc(...)` — assemble dev-funding
+  entries for splicing into a `Genesis.alloc`.
+
+The system account that hosts the precompile's consensus storage is
+materialised lazily by `arkiv-entitydb` on its first write — it does
+not appear in `genesis_alloc()`.
 
 ### 1.2 `arkiv-entitydb`
 
@@ -66,11 +65,15 @@ runs against an abstract `StateAdapter` trait. Contains:
   `pair_address`, `index_address`, built-in annotation keys,
   system-account address.
 - **`StateAdapter` trait.** `code` / `set_code` / `tombstone_code` /
-  `storage` / `set_storage`. Implemented in production by
-  `RevmStateAdapter` (precompile path, journaled writes) and
-  `RethStateAdapter` (RPC read path, against a `StateProvider`
-  snapshot). The `test-utils` feature exposes `InMemoryAdapter` for
-  unit tests.
+  `storage` / `set_storage` / `ensure_account_persists`. Implemented
+  in production by `RevmStateAdapter` (precompile path, journaled
+  writes) and `RethStateAdapter` (RPC read path, against a
+  `StateProvider` snapshot). The `test-utils` feature exposes
+  `InMemoryAdapter` for unit tests.
+  `ensure_account_persists` bumps the account's nonce to ≥ 1 so
+  EIP-161 doesn't prune it at end-of-tx. Idempotent. Used by
+  `bump_nonce` to lazily materialise the system account on its first
+  storage write — no genesis allocation required.
 - **Op handlers.** `create` / `update` / `extend` / `transfer` /
   `delete` / `expire`. All indexing logic (system counter, ID maps,
   Tier-1 bitmap deltas and Tier-2 ART deltas across built-in and
@@ -116,13 +119,12 @@ The execution-client binary. A thin wrapper around
   query handler is a thin shell over `arkiv_entitydb::query::execute`.
 - `install.rs` — `extend_rpc_modules` hook registering the `arkiv_*`
   namespace.
-- `genesis.rs` — `has_arkiv_system_account(chain)` activation guard
-  (`nonce >= 1` at `SYSTEM_ACCOUNT_ADDRESS`).
 - `cli.rs` — `ArkivExt` clap args.
 
-There is **no chainspec mutation**. The system account must be in the
-loaded chainspec's `alloc` (see
-[Genesis construction](#2-genesis-construction)).
+There is **no chainspec mutation** and no Arkiv-specific chainspec
+gate. Any valid OP-stack chainspec works; the precompile is
+registered programmatically by the custom `EvmFactory`, and the
+system-account storage host is created on the first write.
 
 ### 1.4 `arkiv-cli`
 
@@ -138,9 +140,9 @@ ABI; from the wire it's indistinguishable from a contract call.
 
 **Genesis post-processing** (no network required):
 `arkiv-cli inject-predeploy <input.json>` reads a geth-format genesis
-and splices the system account at `SYSTEM_ACCOUNT_ADDRESS` plus
-dev-funded accounts into `alloc`. Composes with op-deployer output
-for production deployments.
+and splices the dev-funded accounts into `alloc`. Composes with
+op-deployer output for production deployments. The system account is
+not injected — it's materialised lazily on the first op.
 
 The traffic simulator (`simulate`) rotates through mnemonic-derived
 signers, maintains an in-memory pool of alive entities, and submits a
@@ -225,13 +227,18 @@ op-reth node --chain ops/genesis.json --datadir ./data
 `ARKIV_ADDRESS` itself gets no genesis entry — the precompile is
 registered programmatically by the custom `EvmFactory`.
 
-### 2.5 System account pre-allocation
+### 2.5 No system-account pre-allocation
 
-`genesis_alloc()` pre-allocates the system account at
-`SYSTEM_ACCOUNT_ADDRESS` with `nonce=1` (empty code, empty storage).
-The `nonce=1` defeats EIP-161 pruning before the precompile writes
-its first slot. Pre-allocation also avoids a per-`Create`
-"does the system account exist?" check.
+The system account that hosts the precompile's storage is *not*
+pre-allocated in genesis. `arkiv-entitydb` materialises it lazily on
+the first op (typically a CREATE): `bump_nonce` calls
+`StateAdapter::ensure_account_persists`, which bumps the system
+account's nonce to 1 the first time it's touched. EIP-161 sees the
+account as non-empty (nonce ≥ 1) and doesn't prune it at end-of-tx.
+The mechanism is idempotent — subsequent calls are no-ops.
+
+Net effect: no Arkiv-specific genesis entry is needed at all. The
+binary runs against any valid OP-stack chainspec.
 
 ---
 
@@ -254,7 +261,8 @@ its first slot. Pre-allocation also avoids a per-`Create`
 | Decision | Why |
 |---|---|
 | Precompile target at `ARKIV_ADDRESS = 0x4400…0044` | Matches OP convention for system contract slots; the address is a property of the chain, not the binary. The SDK was already calling this address as the EntityRegistry contract in v1, so keeping it preserves the user-facing ABI. |
-| System account at `SYSTEM_ACCOUNT_ADDRESS = 0x4400…0046` | Hosts the precompile's consensus storage (counter, nonces, ID maps) on a dedicated empty-coded account. Splitting it from `ARKIV_ADDRESS` keeps the precompile target itself a pure programmatic-registration target (no genesis dependency, mirrors how standard precompiles like `ecrecover` work). |
+| System account (entitydb-internal at `0x4400…0046`) | Hosts the precompile's consensus storage (counter, nonces, ID maps) on a dedicated empty-coded account. Splitting it from `ARKIV_ADDRESS` keeps the precompile target itself a pure programmatic-registration target (mirrors how standard precompiles like `ecrecover` work). `pub(crate)` in `arkiv-entitydb` — external code never sees the address. |
+| Lazy system-account materialisation | `arkiv-entitydb::bump_nonce` calls `StateAdapter::ensure_account_persists` on first touch, bumping the account's nonce to 1 so EIP-161 doesn't prune it. No genesis allocation, no chainspec dependency. |
 | Custom `EvmFactory` (not ExEx) | State mutation happens inside EVM execution; the result lands in `stateRoot` and inherits op-reth's standard reorg machinery for free. |
 | Bitmap as account code (`codeHash` = `keccak256(bitmap)`) | Content-addressing in the trie comes for free; query verification is one `eth_getProof` per bitmap. |
 | ART as account code (`codeHash` = `keccak256(art_bytes)`) | Same content-addressing trick as bitmaps; range-query verification is one `eth_getProof` per index account. |
@@ -277,9 +285,9 @@ its first slot. Pre-allocation also avoids a per-`Create`
 - **Built-in `--chain arkiv` name.** Could be done via a custom
   `ChainSpecParser`. Not pursued; the file-based flow works and
   composes uniformly with prod.
-- **Mainnet system-account registration in `L2Genesis.s.sol`.** The
-  cleanest long-term home for the predeploy entry. Not pursued yet;
-  the post-process approach has a tinier surface we own.
+- **Mainnet `L2Genesis.s.sol` integration.** No longer needed — the
+  system account is materialised lazily, so there's nothing to
+  register in genesis.
 - **Arbitrary-pattern glob.** `~` accepts prefix patterns only —
   mid-pattern wildcards and `?` would need a full ART scan rather
   than `iter_prefix`. Not on the critical path.
@@ -374,5 +382,5 @@ Ethereum account.
    `keccak256("arkiv.index" || …)[:20]` derivations could in
    principle collide with an existing externally-owned account on the
    L3. Genesis-time check + chain bring-up documentation is
-   sufficient. (The system account at the fixed
-   `SYSTEM_ACCOUNT_ADDRESS` cannot collide with derived addresses.)
+   sufficient. (The system account at its fixed address cannot
+   collide with derived addresses.)

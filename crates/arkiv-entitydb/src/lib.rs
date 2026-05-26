@@ -11,12 +11,14 @@
 //!   roaring64 bitmap of entity IDs as `code`. `codeHash` is
 //!   `keccak256(bitmap_bytes)` by construction — every bitmap is
 //!   content-addressed in the trie.
-//! - **System account** at [`SYSTEM_ACCOUNT_ADDRESS`] — pre-allocated
-//!   empty-code account that hosts the global entity counter, the
+//! - **System account** (internal — see `SYSTEM_ACCOUNT_ADDRESS`) —
+//!   empty-coded account that hosts the global entity counter, the
 //!   per-caller `nonces` map, and the trie-committed ID ↔ address maps
-//!   as storage slots. Separate from the precompile's registration
-//!   address ([`ARKIV_ADDRESS`]) so the precompile itself stays a
-//!   programmatic registration target with no on-chain dependency.
+//!   as storage slots. Materialised lazily on the first write via
+//!   `StateAdapter::ensure_account_persists` — no genesis presence
+//!   required. Separate from the precompile's registration address
+//!   ([`ARKIV_ADDRESS`]) so the precompile itself stays a programmatic
+//!   registration target with no on-chain dependency.
 //!
 //! Top-level exports:
 //!
@@ -46,7 +48,7 @@ pub mod query;
 /// at by the custom `EvmFactory`. EOAs / SDKs `CALL` this address with
 /// the `execute(Operation[])` / `nonces(address)` ABI declared by
 /// `IEntityRegistry`. The precompile itself touches no storage on this
-/// address — consensus state lives on [`SYSTEM_ACCOUNT_ADDRESS`].
+/// address — consensus state lives on the system account.
 ///
 /// Matches the SDK's `ARKIV_ADDRESS` constant. `arkiv-genesis`
 /// re-exports it.
@@ -54,13 +56,18 @@ pub const ARKIV_ADDRESS: Address = Address::new([
     0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x44,
 ]);
 
-/// System account that holds the precompile's consensus state — global
-/// entity counter, per-caller `nonces` map, and the trie-committed
-/// ID ↔ address maps as storage slots. Pre-allocated in genesis with
-/// `nonce = 1` so EIP-161 doesn't prune it before the precompile gets a
-/// chance to write into it. Has no code; the address is reserved
-/// purely as a storage host.
-pub const SYSTEM_ACCOUNT_ADDRESS: Address = Address::new([
+/// Address the precompile uses as a storage host — global entity
+/// counter, per-caller `nonces` map, and the trie-committed ID ↔
+/// address maps live here as storage slots. Materialised lazily on
+/// the first storage write via `StateAdapter::ensure_account_persists`
+/// (called from [`bump_nonce`]), which bumps the nonce to 1 so EIP-161
+/// doesn't prune the account at end-of-tx. No genesis allocation
+/// required.
+///
+/// `pub(crate)` — entitydb is the only crate that should touch this
+/// address. External callers go through the op handlers and the
+/// `read_nonce` / `bump_nonce` API.
+pub(crate) const SYSTEM_ACCOUNT_ADDRESS: Address = Address::new([
     0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x46,
 ]);
 
@@ -181,7 +188,16 @@ pub fn read_nonce<S: StateAdapter>(state: &mut S, caller: Address) -> Result<u32
 /// Read-then-increment `caller`'s nonce. Returns the value that was
 /// there before the increment (the value to use for the entity-key
 /// derivation that's about to happen).
+///
+/// Also lazily materialises the system account: on the first call
+/// against a fresh chain, `ensure_account_persists` raises the system
+/// account's nonce to 1 so EIP-161 doesn't prune it (and the nonce
+/// slot we're about to write) at end-of-tx. Idempotent on subsequent
+/// calls. This is the only entry point that touches the system
+/// account before any other slot has been written, so it's enough to
+/// run the guard here.
 pub fn bump_nonce<S: StateAdapter>(state: &mut S, caller: Address) -> Result<u32> {
+    state.ensure_account_persists(&SYSTEM_ACCOUNT_ADDRESS)?;
     let slot = slot_nonces(caller);
     let raw = state.storage(&SYSTEM_ACCOUNT_ADDRESS, slot)?;
     let current = u32::from_be_bytes(raw.0[28..].try_into().unwrap());
@@ -409,12 +425,19 @@ impl EntityRlp {
 ///   it was previously zero.
 /// - `tombstone_code` clears the code but preserves `nonce = 1` so
 ///   EIP-161 doesn't prune the account.
+/// - `ensure_account_persists` raises the account's nonce to at least
+///   1 so EIP-161 doesn't prune it at end-of-tx. Idempotent. Used by
+///   the entitydb to lazily materialise the system account on its
+///   first storage write — without it, an empty-coded account that
+///   only receives storage writes is still EIP-161-empty (the check
+///   ignores storage) and gets pruned along with its slots.
 pub trait StateAdapter {
     fn code(&mut self, addr: &Address) -> Result<Vec<u8>>;
     fn set_code(&mut self, addr: &Address, code: Vec<u8>) -> Result<()>;
     fn tombstone_code(&mut self, addr: &Address) -> Result<()>;
     fn storage(&mut self, addr: &Address, slot: B256) -> Result<B256>;
     fn set_storage(&mut self, addr: &Address, slot: B256, value: B256) -> Result<()>;
+    fn ensure_account_persists(&mut self, addr: &Address) -> Result<()>;
 }
 
 // ─── Op handlers ──────────────────────────────────────────────────────
@@ -849,14 +872,6 @@ pub mod test_utils {
         pub fn account_mut(&mut self, addr: &Address) -> &mut AccountState {
             self.accounts.entry(*addr).or_default()
         }
-
-        /// Pre-allocate the system account with `nonce = 1` to mirror
-        /// what genesis does in production.
-        pub fn with_system_account_preallocated() -> Self {
-            let mut me = Self::default();
-            me.account_mut(&SYSTEM_ACCOUNT_ADDRESS).nonce = 1;
-            me
-        }
     }
 
     /// Thin [`StateAdapter`] over a borrowed [`InMemoryStateDb`].
@@ -908,6 +923,14 @@ pub mod test_utils {
 
         fn set_storage(&mut self, addr: &Address, slot: B256, value: B256) -> Result<()> {
             self.db.account_mut(addr).storage.insert(slot, value);
+            Ok(())
+        }
+
+        fn ensure_account_persists(&mut self, addr: &Address) -> Result<()> {
+            let acc = self.db.account_mut(addr);
+            if acc.nonce == 0 {
+                acc.nonce = 1;
+            }
             Ok(())
         }
     }
@@ -996,7 +1019,7 @@ mod tests {
     // ─── Op handlers (against InMemoryAdapter) ───────────────────────
 
     fn fresh_db() -> InMemoryStateDb {
-        InMemoryStateDb::with_system_account_preallocated()
+        InMemoryStateDb::default()
     }
 
     fn alice() -> Address {

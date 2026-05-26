@@ -25,14 +25,17 @@ index (per-pair roaring64 bitmaps), the Tier-2 ART range index, and
 the global counter / nonces / ID maps all live in the L3 trie. No
 external indexer process, no out-of-trie state.
 
-Two canonical addresses:
+One public address:
 
 - `ARKIV_ADDRESS = 0x4400…0044` — precompile registration target. No
   genesis presence; activation is programmatic via `EvmFactory`.
-- `SYSTEM_ACCOUNT_ADDRESS = 0x4400…0046` — empty-coded account at
-  `nonce=1` in genesis, hosts the precompile's consensus storage
-  (per-caller nonces, global entity counter, ID ↔ address maps).
-  `nonce=1` so EIP-161 doesn't prune the storage on the first write.
+
+Internally, `arkiv-entitydb` uses a fixed second address (entitydb
+crate-private) as a storage host for per-caller nonces, the global
+entity counter, and the ID ↔ address maps. That account is
+**materialised lazily on first write** via
+`StateAdapter::ensure_account_persists`, which bumps the nonce to 1 so
+EIP-161 doesn't prune it. No genesis presence required.
 
 ## Workspace layout
 
@@ -41,11 +44,11 @@ crates/
   arkiv-node/         # binary: custom EvmFactory + Arkiv precompile + arkiv_* RPC
   arkiv-entitydb/     # state model + op handlers + system-state API + query language
   arkiv-cli/          # operator CLI: entity ops, batches, simulate, inject-predeploy
-  arkiv-genesis/      # shared lib: ARKIV_ADDRESS + SYSTEM_ACCOUNT_ADDRESS + alloc helpers
+  arkiv-genesis/      # shared lib: ARKIV_ADDRESS + dev-funding alloc helpers
 e2e/                  # full-pipeline integration tests (uses NodeTestContext)
 contracts/
   src/EntityRegistry.sol    # IEntityRegistry interface — ABI surface for SDK codegen (no deployed bytecode)
-chainspec/dev.base.json     # geth-format dev chainspec (system account injected at recipe time)
+chainspec/dev.base.json     # geth-format dev chainspec (dev funding injected at recipe time)
 docs/1_overview.md          # high-level orientation — read this first
 docs/2_state-model.md       # canonical state model — read if touching precompile / op handlers / gas
 docs/3_query.md             # query language + verification — read if touching the query path
@@ -63,14 +66,13 @@ justfile                    # all dev recipes
 | Arkiv precompile (selector dispatch, validation, gas, op dispatch, event emission) | `crates/arkiv-node/src/precompile.rs` |
 | `arkiv_*` RPC namespace + `RethStateAdapter` | `crates/arkiv-node/src/rpc.rs` |
 | RPC installation hook | `crates/arkiv-node/src/install.rs` |
-| System-account detection (nonce ≥ 1 at `SYSTEM_ACCOUNT_ADDRESS`) | `crates/arkiv-node/src/genesis.rs` |
-| CLI flags + chainspec gating | `crates/arkiv-node/src/{cli,main}.rs` |
+| CLI flags + node-builder wiring | `crates/arkiv-node/src/{cli,main}.rs` |
 | Entity / pair / index layout, RLP, bitmap, ART | `crates/arkiv-entitydb/src/lib.rs` |
 | `StateAdapter` trait + `InMemoryAdapter` (test-utils feature) | `crates/arkiv-entitydb/src/lib.rs` |
 | Op handlers (`create` / `update` / `extend` / `transfer` / `delete` / `expire`) | `crates/arkiv-entitydb/src/lib.rs` |
 | System-state API (`read_nonce` / `bump_nonce`) + `pub(crate)` slot layout | `crates/arkiv-entitydb/src/lib.rs` |
 | Query lexer / parser / AST / interpreter | `crates/arkiv-entitydb/src/query/` |
-| `ARKIV_ADDRESS`, `SYSTEM_ACCOUNT_ADDRESS`, alloc helpers | `crates/arkiv-genesis/src/lib.rs` |
+| `ARKIV_ADDRESS` + dev-funding alloc helpers | `crates/arkiv-genesis/src/lib.rs` |
 | `IEntityRegistry` ABI surface (interface only, no bytecode) | `contracts/src/EntityRegistry.sol` |
 | CLI commands + batch format | `crates/arkiv-cli/src/main.rs` |
 | Traffic simulator | `crates/arkiv-cli/src/simulate.rs` |
@@ -119,16 +121,16 @@ cargo test -p arkiv-e2e --test full_pipeline_e2e   # full pipeline e2e
 - **`reth-*` and `reth-optimism-*` are pinned to specific git revs** in
   the root `Cargo.toml`. Bumping them is a coordinated change; expect
   API drift to surface across the `EvmFactory` / precompile integration.
-- **No runtime mutation of state to install the system account.** The
-  `SYSTEM_ACCOUNT_ADDRESS` account (empty code, `nonce=1`) must be in
-  `alloc` from block 0. `arkiv-cli inject-predeploy` is the supported
-  path; the same chainspec file must drive both `init` and `node` so
-  genesis hashes match. See
-  [`docs/4_engineering.md`](docs/4_engineering.md) §2.
 - **The precompile is registered programmatically by `EvmFactory`** —
-  no on-chain bytecode is deployed at `ARKIV_ADDRESS`. The system
-  account at `SYSTEM_ACCOUNT_ADDRESS` exists purely as a storage host;
-  activation guard is `nonce >= 1` at that address.
+  no on-chain bytecode is deployed at `ARKIV_ADDRESS`, and no
+  Arkiv-specific genesis allocation is required to run the binary.
+  The chainspec only needs to be a valid OP-stack chainspec; the
+  system-account storage host is created on the first write.
+- **Lazy system-account materialisation.** `arkiv-entitydb`'s
+  `StateAdapter` exposes `ensure_account_persists(addr)`. Called from
+  the top of `bump_nonce`, it bumps the system-account nonce to 1 the
+  first time the precompile touches it, so EIP-161 doesn't prune the
+  account at end-of-tx. Idempotent.
 - **`contracts/src/EntityRegistry.sol` is an interface only.** It
   declares the ABI (`execute(Operation[])`, `nonces(address)`,
   `EntityOperation` event, struct / error layouts) that the precompile
@@ -143,11 +145,12 @@ cargo test -p arkiv-e2e --test full_pipeline_e2e   # full pipeline e2e
   `StateAdapter` impl over `EvmInternals`. The op handlers do the
   actual indexing math (entity counter, ID maps, bitmap deltas, ART
   deltas, RLP encode).
-- **`arkiv-entitydb` owns the system-account slot layout.** `slot_*`
-  helpers are `pub(crate)`; external callers use the public
-  `read_nonce(state, caller)` / `bump_nonce(state, caller)` accessors.
-  The precompile never does direct `sload`/`sstore` against
-  `SYSTEM_ACCOUNT_ADDRESS`.
+- **`arkiv-entitydb` owns the system account.** The address constant
+  and the `slot_*` helpers are `pub(crate)`; external callers use the
+  public `read_nonce(state, caller)` / `bump_nonce(state, caller)`
+  accessors. The precompile never references the system account
+  directly — to the rest of the workspace it's an entitydb
+  implementation detail.
 - **Per-op authorization** lives in the precompile: CREATE is open to
   any EOA; UPDATE / EXTEND / TRANSFER / DELETE require
   `input.caller == stored owner`; EXPIRE is caller-agnostic but
@@ -175,6 +178,6 @@ cargo test -p arkiv-e2e --test full_pipeline_e2e   # full pipeline e2e
   from it.
 - When touching the query path / RPC, update
   [`docs/3_query.md`](docs/3_query.md) in the same change.
-- When touching genesis / system-account logic or the crate layout,
+- When touching genesis / dev-funding logic or the crate layout,
   update [`docs/4_engineering.md`](docs/4_engineering.md) if the
   operator-facing flow changes.

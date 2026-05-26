@@ -840,6 +840,10 @@ impl StateAdapter for RevmStateAdapter<'_, '_> {
             .map_err(|e| eyre::eyre!("sstore({addr}, {slot}): {e:?}"))?;
         Ok(())
     }
+
+    fn ensure_account_persists(&mut self, addr: &Address) -> eyre::Result<()> {
+        self.ensure_nonce_at_least_one(*addr)
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────

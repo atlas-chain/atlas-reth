@@ -17,9 +17,10 @@ The binary serves both write and read paths:
 
 - **Writes** target `ARKIV_ADDRESS` with calldata for
   `execute(Operation[])`. The precompile decodes the batch, validates
-  ownership / liveness / `Ident32` charset, charges gas, mutates entity
-  / pair / index account state and the system account's storage via
-  revm's journaled state, and emits an `EntityOperation` event per op.
+  ownership / liveness / `Ident32` charset, charges gas, mutates
+  entity / pair / index account state plus the storage of an
+  internally-managed system account (materialised lazily by
+  `arkiv-entitydb`), and emits an `EntityOperation` event per op.
 - **Reads** are served by the `arkiv_*` JSON-RPC namespace
   (`arkiv_query`, `arkiv_getEntityCount`, `arkiv_getBlockTiming`)
   backed entirely by local trie state. The query language and its
@@ -39,14 +40,17 @@ The binary serves both write and read paths:
                   └──────────────────────────────────────────────────┘
 ```
 
-Two canonical addresses:
+The chain has a single public address — `ARKIV_ADDRESS = 0x4400…0044`,
+the precompile registration target. No genesis allocation is required
+to run the binary; the custom `EvmFactory` activates the precompile
+programmatically.
 
-- `ARKIV_ADDRESS = 0x4400…0044` — precompile registration target. No
-  genesis presence; activation is programmatic via `EvmFactory`.
-- `SYSTEM_ACCOUNT_ADDRESS = 0x4400…0046` — empty-coded system account
-  pre-allocated in genesis with `nonce=1` (so EIP-161 doesn't prune
-  it). Hosts the precompile's consensus storage: per-caller nonces,
-  global entity counter, and the ID ↔ address maps.
+Internally, `arkiv-entitydb` uses a second fixed address as a storage
+host for per-caller nonces, the global entity counter, and the
+ID ↔ address maps. That account is **materialised lazily on the first
+op** — the entitydb crate bumps its nonce to 1 the first time it
+touches the account so EIP-161 doesn't prune the storage. The address
+is `pub(crate)` in entitydb; consumers of the workspace never see it.
 
 The query language covers the **equality family** (`=`, `!=`, `IN`,
 `NOT IN`, `&&`, `||`, `NOT`, `*` / `$all`), **range** (`<`, `>`, `<=`,
@@ -61,7 +65,7 @@ against a Tier-2 ART index account per attribute key.
 |---|---|
 | `crates/arkiv-node` | Execution-client binary. Hosts the custom `EvmFactory`, the Arkiv precompile, and the `arkiv_*` RPC namespace. |
 | `crates/arkiv-entitydb` | State-model primitives (entity / pair / index account layout, RLP, bitmap, ART), the six op handlers (`create` / `update` / `extend` / `transfer` / `delete` / `expire`), the system-account slot layout + `read_nonce` / `bump_nonce` accessors, and the query language (lexer + parser + tree-walking interpreter). |
-| `crates/arkiv-genesis` | `ARKIV_ADDRESS` + `SYSTEM_ACCOUNT_ADDRESS` constants and dev-account alloc helpers. |
+| `crates/arkiv-genesis` | `ARKIV_ADDRESS` re-export and dev-account alloc helpers. |
 | `crates/arkiv-cli` | Operator CLI: submit entity ops, batch ops from JSON, traffic simulator, genesis post-processing. |
 | `e2e` | End-to-end tests against an in-process `ArkivOpNode`. |
 
@@ -83,9 +87,8 @@ just node-dev
 ```
 
 Assembles an Arkiv dev genesis (chain ID `1337`, 100 dev accounts
-funded, the system account at `SYSTEM_ACCOUNT_ADDRESS = 0x4400…0046`),
-initialises the datadir against it, and launches the node with 2 s
-auto-mining. HTTP RPC on `127.0.0.1:8545`, WebSocket on
+funded), initialises the datadir against it, and launches the node
+with 2 s auto-mining. HTTP RPC on `127.0.0.1:8545`, WebSocket on
 `127.0.0.1:8546`.
 
 ### Submit operations
@@ -136,7 +139,7 @@ just genesis | jq .alloc
 ├── contracts/
 │   └── src/EntityRegistry.sol     # IEntityRegistry interface — ABI surface for SDK codegen
 ├── e2e/                      # full-pipeline integration tests
-├── chainspec/dev.base.json   # geth-format dev chainspec sans system account
+├── chainspec/dev.base.json   # geth-format dev chainspec (dev funding injected at recipe time)
 ├── docs/
 │   ├── 1_overview.md         # high-level orientation
 │   ├── 2_state-model.md      # canonical state model
@@ -152,22 +155,22 @@ just genesis | jq .alloc
 
 ## Running against a real OP chain
 
-For production / testnet deployment the Arkiv system account must be
-in the genesis allocs from block 0:
+The binary is a true drop-in op-reth — no Arkiv-specific genesis
+allocation is required. The precompile is registered programmatically
+by the custom `EvmFactory`, and the system account that hosts the
+precompile's storage is materialised lazily on the first op.
 
 ```bash
 op-deployer apply --intent intent.toml --workdir ./ops     # standard OP genesis
-arkiv-cli inject-predeploy ops/genesis.json                # add system account + dev funding
+arkiv-cli inject-predeploy ops/genesis.json                # add dev funding (optional)
 op-reth init --chain ops/genesis.json --datadir ./data
 op-reth node --chain ops/genesis.json --datadir ./data
 ```
 
-`inject-predeploy` reads the input genesis and splices the
-`SYSTEM_ACCOUNT_ADDRESS` account (empty code, `nonce=1`) plus
-dev-funded accounts into `alloc`. The same chainspec drives both
-`init` and `node`, so genesis hashes match. `ARKIV_ADDRESS` itself
-gets no genesis entry — the precompile is registered programmatically
-by the custom `EvmFactory`.
+`inject-predeploy` is now a convenience that only splices dev-funded
+accounts into `alloc` — useful for local dev, optional in production.
+The same chainspec drives both `init` and `node`, so genesis hashes
+match.
 
 See [`docs/4_engineering.md`](docs/4_engineering.md) §2 for the
 genesis-construction rules (Path-A chainspecs, Holocene `extraData`,
@@ -180,7 +183,7 @@ why we don't mutate the chainspec at startup).
 | Doc | What's in it |
 |---|---|
 | [`docs/1_overview.md`](docs/1_overview.md) | High-level orientation: what `arkiv-op-reth` is, system diagram, content-addressed-code principle |
-| [`docs/2_state-model.md`](docs/2_state-model.md) | Canonical state model: entity / pair / index accounts, system account slots, op lifecycle, gas, reorg |
+| [`docs/2_state-model.md`](docs/2_state-model.md) | Canonical state model: entity / pair / index accounts, system-account slots, op lifecycle, gas, reorg |
 | [`docs/3_query.md`](docs/3_query.md) | Query language, evaluation flow, historical reads, verification recipes |
 | [`docs/4_engineering.md`](docs/4_engineering.md) | Crate layout, genesis construction, testing surface, fault-proof story, open questions |
 

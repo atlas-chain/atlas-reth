@@ -27,7 +27,7 @@ fn key_n(n: u8) -> B256 {
 }
 
 fn fresh() -> InMemoryStateDb {
-    InMemoryStateDb::with_system_account_preallocated()
+    InMemoryStateDb::default()
 }
 
 #[track_caller]

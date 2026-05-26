@@ -453,4 +453,8 @@ impl StateAdapter for RethStateAdapter {
     fn set_storage(&mut self, _addr: &Address, _slot: B256, _value: B256) -> Result<()> {
         eyre::bail!("RethStateAdapter is read-only: set_storage called from query path")
     }
+
+    fn ensure_account_persists(&mut self, _addr: &Address) -> Result<()> {
+        eyre::bail!("RethStateAdapter is read-only: ensure_account_persists called from query path")
+    }
 }

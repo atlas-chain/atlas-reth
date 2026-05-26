@@ -175,8 +175,15 @@ pub trait StateAdapter {
     fn tombstone_code(&mut self, addr: &Address) -> Result<()>;
     fn storage(&mut self, addr: &Address, slot: B256) -> Result<B256>;
     fn set_storage(&mut self, addr: &Address, slot: B256, value: B256) -> Result<()>;
+    fn ensure_account_persists(&mut self, addr: &Address) -> Result<()>;
 }
 ```
+
+`ensure_account_persists` bumps the account's nonce to ≥ 1 so EIP-161
+doesn't prune it at end-of-tx (the empty-account check ignores
+storage). Idempotent. Used by `bump_nonce` to lazily materialise the
+system account on its first storage write — no genesis allocation
+required.
 
 The trait has two production implementations and one test
 implementation:
@@ -215,12 +222,10 @@ detail, not part of the public API.
 
 ### Canonical addresses
 
-Two fixed addresses make up the Arkiv-specific surface in the trie:
-
 | Address | What | Genesis presence |
 |---|---|---|
 | `ARKIV_ADDRESS = 0x4400000000000000000000000000000000000044` | Precompile registration target. EOAs `CALL` here with `execute(Operation[])` / `nonces(address)` calldata. | None. The custom `EvmFactory` registers the precompile programmatically; no contract bytecode is deployed. |
-| `SYSTEM_ACCOUNT_ADDRESS = 0x4400000000000000000000000000000000000046` | Singleton account hosting the precompile's consensus storage: per-caller `nonces`, the global `entity_count`, and the ID ↔ address maps. | Pre-allocated empty-code account at `nonce=1`. `nonce=1` keeps EIP-161 from pruning the account before the precompile writes its first slot. |
+| System account (entitydb-internal, `pub(crate)` in `arkiv-entitydb`, address `0x4400…0046`) | Singleton account hosting the precompile's consensus storage: per-caller `nonces`, the global `entity_count`, and the ID ↔ address maps. | None. Materialised lazily on the first write via `StateAdapter::ensure_account_persists`, which bumps the nonce to 1 so EIP-161 doesn't prune the account. |
 
 All other Arkiv state lives on accounts whose addresses are derived
 from content: entity accounts at `entityKey[:20]`, pair accounts at
@@ -310,24 +315,26 @@ address can recover the complete key.
 
 ### System Account
 
-The singleton account at `SYSTEM_ACCOUNT_ADDRESS`. Pre-allocated in
-genesis with `nonce = 1` (to defeat EIP-161) and empty code / empty
-storage. The precompile writes the following slots over the life of
-the chain:
+A singleton account at a fixed address (entitydb-internal — both the
+address constant and the `slot_*` helpers are `pub(crate)` in
+`arkiv-entitydb`; external code goes through `read_nonce` /
+`bump_nonce` and the op handlers). Empty code, empty storage at
+genesis-time *(if anything were there at all — there is no genesis
+allocation)*. The first `bump_nonce` call materialises the account by
+bumping its nonce to 1 via `StateAdapter::ensure_account_persists`,
+keeping EIP-161 from pruning the account at end-of-tx.
+
+The precompile writes the following slots over the life of the chain:
 
 ```
-System Account  (address = 0x4400000000000000000000000000000000000046)
-  nonce    = 1
+System account  (address = 0x4400000000000000000000000000000000000046, pub(crate))
+  nonce    = 1   (lazily set on first write)
   storage slots:
     slot[keccak256("entity_count")]                  →  uint64       // next entity ID
     slot[keccak256("id_to_addr"  || uint64_id)]      →  address      // ID → entity_address
     slot[keccak256("addr_to_id"  || entity_address)] →  uint64       // entity_address → ID
     slot[keccak256("nonces"      || caller)]         →  uint32       // per-EOA entity-key minting nonce
 ```
-
-The slot layout lives in `crates/arkiv-entitydb/src/lib.rs` as
-`pub(crate)` helpers; external code goes through
-`arkiv_entitydb::read_nonce` / `bump_nonce` and the op handlers.
 
 The `entity_count` slot is the canonical source for ID assignment.
 Every node executing the same block sees the same value and assigns
@@ -643,8 +650,8 @@ Trie (committed in stateRoot):
     No genesis entry. Programmatic registration via custom EvmFactory.
     All CALLs to this address land on the native precompile, not on bytecode.
 
-  System account  (SYSTEM_ACCOUNT_ADDRESS = 0x4400…0046):
-    nonce                                                   → 1
+  System account  (entitydb-internal, address = 0x4400…0046):
+    nonce                                                   → 1   (lazily set on first write)
     storage:
       slot[keccak256("entity_count")]                       → uint64
       slot[keccak256("id_to_addr"  || uint64_id)]           → entity_address

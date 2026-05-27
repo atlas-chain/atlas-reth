@@ -31,6 +31,14 @@ lint:
 fmt:
     cargo fmt --all
 
+# unit tests across workspace
+unit-tests:
+    cargo test --workspace --lib
+
+# e2e tests doing series of operations on locally started node (it is actually kind of component test)
+e2e-tests:
+    cargo test -p arkiv-e2e
+
 # ── Node ─────────────────────────────────────────────────────
 
 # Print an Arkiv dev genesis JSON to stdout (dev.base.json + injected predeploy)

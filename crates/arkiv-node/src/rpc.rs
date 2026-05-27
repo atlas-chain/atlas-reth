@@ -91,7 +91,7 @@ pub struct IncludeData {
 pub struct QueryResponse {
     pub data: Vec<EntityData>,
     /// Block number at which the query was evaluated.
-    #[serde(serialize_with = "ser_u64_hex")]
+    #[serde(serialize_with = "ser_u64_hex", deserialize_with = "de_u64_hex")]
     pub block_number: u64,
     /// Cursor for the next page, or `None` if this is the last page.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,9 +115,9 @@ pub struct EntityData {
     pub owner: Option<Address>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creator: Option<Address>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_u64_hex")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_u64_hex", deserialize_with = "de_u64_flexible")]
     pub created_at_block: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_u64_hex")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_u64_hex", deserialize_with = "de_u64_flexible")]
     pub last_modified_at_block: Option<u64>,
     /// Always 0 — reth's revm context doesn't expose the
     /// tx-index-in-block during precompile execution. Kept in the wire
@@ -373,6 +373,29 @@ fn ser_opt_u64_hex<S: serde::Serializer>(
     match v {
         Some(n) => s.serialize_str(&format!("0x{n:x}")),
         None => s.serialize_none(),
+    }
+}
+
+fn de_u64_hex<'de, D>(de: D) -> std::result::Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Num(u64),
+        Hex(String),
+    }
+    match Either::deserialize(de)? {
+        Either::Num(n) => Ok(n),
+        Either::Hex(s) => {
+            let stripped =
+                s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(&s);
+            u64::from_str_radix(stripped, 16)
+                .map_err(|e| D::Error::custom(format!("invalid hex u64 {s:?}: {e}")))
+        }
     }
 }
 

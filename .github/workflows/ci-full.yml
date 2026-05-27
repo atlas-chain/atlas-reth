@@ -1,0 +1,413 @@
+name: Full CI (produce new docker images)
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags:
+      - "**"
+  pull_request:
+    branches:
+      - main
+      - develop
+      - release/**
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Architecture(s) to build"
+        type: choice
+        required: true
+        default: "both"
+        options: ["both", "amd64", "arm64"]
+      rust_version:
+        description: "Rust version"
+        required: true
+        default: "1.95.0"
+      strip_binaries:
+        description: "Strip binaries"
+        type: choice
+        required: true
+        default: "true"
+        options: ["true", "false"]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Get foundry cli
+        run: |
+          set -x
+          curl -sL https://github.com/foundry-rs/foundry/releases/download/v1.7.0/foundry_v1.7.0_linux_amd64.tar.gz | tar -xz
+          mv forge cast anvil chisel /usr/local/bin/
+          forge --version
+          chisel --version
+          cast --version
+          anvil --version
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-full-checks"
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run unit tests
+        run: just unit-tests
+
+      - name: Run e2e tests
+        run: just e2e-tests
+
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      arch_matrix: ${{ steps.set-matrix.outputs.arch_matrix }}
+      docker_matrix: ${{ steps.set-matrix.outputs.docker_matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          arch="${{ inputs.arch || 'both' }}"
+
+          # arch entries used by build / upload jobs
+          amd64='{"arch":"amd64","runner":"ubuntu-24.04","foundry_arch":"amd64"}'
+          arm64='{"arch":"arm64","runner":"ubuntu-24.04-arm","foundry_arch":"arm64"}'
+
+          # image-variant suffixes merged into each arch entry for docker jobs
+          std='"image":"arkiv-node","dockerfile":"runtime.Dockerfile","dev":false,"builder":"create-docker-image-full","description":"Production image build"'
+          dev='"image":"arkiv-node-dev","dockerfile":"runtime-dev.Dockerfile","dev":true,"builder":"create-docker-image-dev-full","description":"Production dev image (bundled bootstrap)"'
+
+          mk() { local base=$1 variant=$2; echo "${base%\}},${variant}}"; }
+
+          if [[ "$arch" == "amd64" ]]; then
+            echo "arch_matrix={\"include\":[$amd64]}" >> $GITHUB_OUTPUT
+            echo "docker_matrix={\"include\":[$(mk "$amd64" "$std"),$(mk "$amd64" "$dev")]}" >> $GITHUB_OUTPUT
+          elif [[ "$arch" == "arm64" ]]; then
+            echo "arch_matrix={\"include\":[$arm64]}" >> $GITHUB_OUTPUT
+            echo "docker_matrix={\"include\":[$(mk "$arm64" "$std"),$(mk "$arm64" "$dev")]}" >> $GITHUB_OUTPUT
+          else
+            echo "arch_matrix={\"include\":[$amd64,$arm64]}" >> $GITHUB_OUTPUT
+            echo "docker_matrix={\"include\":[$(mk "$amd64" "$std"),$(mk "$amd64" "$dev"),$(mk "$arm64" "$std"),$(mk "$arm64" "$dev")]}" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: [checks, setup]
+    if: github.event_name != 'pull_request'
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.arch_matrix) }}
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set input variables
+        id: variables
+        run: |
+          echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+          echo "rust_version=${{ github.event.inputs.rust_version || '1.95.0' }}" >> $GITHUB_OUTPUT
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update ${{ steps.variables.outputs.rust_version }}
+          rustup default ${{ steps.variables.outputs.rust_version }}
+
+      - name: Get foundry cli
+        run: |
+          set -x
+          curl -sL https://github.com/foundry-rs/foundry/releases/download/v1.7.0/foundry_v1.7.0_linux_${{ matrix.foundry_arch }}.tar.gz | tar -xz
+          mv forge cast anvil chisel /usr/local/bin/
+          forge --version
+          chisel --version
+          cast --version
+          anvil --version
+
+      - name: Build binary
+        run: cargo build --profile release-lto --bin arkiv-node --bin arkiv-cli
+
+      - name: Move arkiv-node binary to build directory
+        run: |
+          mkdir build-artifacts
+          mv target/release-lto/{arkiv-node,arkiv-cli} build-artifacts
+
+      - name: Strip binaries
+        if: ${{ github.event.inputs.strip_binaries != 'false' }}
+        run: strip -x build-artifacts/*
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: arkiv-binaries-${{ matrix.arch }}
+          path: build-artifacts
+
+  upload-binary-artifact:
+    needs:
+      - setup
+      - build
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.arch_matrix) }}
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Download built binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: arkiv-binaries-${{ matrix.arch }}
+          path: /tmp/arkiv-binaries
+
+      - name: Pack binaries
+        id: pack
+        run: |
+          set -euo pipefail
+
+          staging_dir="${RUNNER_TEMP}/artifact-upload"
+          mkdir -p "$staging_dir"
+          cp /tmp/arkiv-binaries/arkiv-node "$staging_dir/arkiv-node"
+          cp /tmp/arkiv-binaries/arkiv-cli "$staging_dir/arkiv-cli"
+          chmod +x "$staging_dir"/*
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            archive_basename="arkiv-op-reth-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.tar.xz"
+          else
+            archive_basename="arkiv-op-reth-production-linux-${{ matrix.arch }}-${GITHUB_SHA}.tar.xz"
+          fi
+          archive="${RUNNER_TEMP}/${archive_basename}"
+
+          tar -cJf "$archive" -C "$staging_dir" arkiv-node arkiv-cli
+
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+          echo "archive_basename=${archive_basename}" >> "$GITHUB_OUTPUT"
+          echo "staging_dir=${staging_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload binaries to custom tracker
+        env:
+          TRACKER_BACKEND_URL: ${{ secrets.TRACKER_BACKEND_URL }}
+        run: |
+          set -euo pipefail
+
+          curl --fail --show-error --silent \
+            -X POST \
+            "${TRACKER_BACKEND_URL%/}/artifact/upload" \
+            -F "repo=arkiv-network/arkiv-op-reth" \
+            -F "commit=${GITHUB_SHA}" \
+            -F "binaries=arkiv-node" \
+            -F "binaries=arkiv-cli" \
+            -F "name=arkiv-op-reth-production-linux-${{ matrix.arch }}" \
+            -F "description=Full production binary build (${{ matrix.arch }}) for ${GITHUB_REF_NAME}" \
+            -F "file=@${{ steps.pack.outputs.archive }};type=application/x-xz"
+
+      - name: Generate artifact attestation
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.pack.outputs.staging_dir }}/*
+
+      - name: Upload binaries to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pack.outputs.archive }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-docker-image:
+    needs:
+      - setup
+      - build
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.docker_matrix) }}
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: arkiv-binaries-${{ matrix.arch }}
+          path: /tmp/arkiv-binaries
+
+      - name: Prepare Docker context
+        run: |
+          mkdir -p docker-context/build-artifacts
+          cp docker/${{ matrix.dockerfile }} docker-context/Dockerfile
+          cp /tmp/arkiv-binaries/arkiv-node docker-context/build-artifacts/arkiv-node
+          cp /tmp/arkiv-binaries/arkiv-cli docker-context/build-artifacts/arkiv-cli
+          chmod +x docker-context/build-artifacts/*
+
+      - name: Prepare dev extras
+        if: matrix.dev
+        run: |
+          mkdir -p docker-context/chainspec docker-context/docker
+          cp docker/dev-entrypoint.sh docker-context/docker/dev-entrypoint.sh
+          cp docker/fund-account.sh docker-context/docker/fund-account.sh
+          cp chainspec/dev.base.json docker-context/chainspec/dev.base.json
+          chmod +x docker-context/docker/dev-entrypoint.sh docker-context/docker/fund-account.sh
+
+      - uses: ./.github/actions/docker-setup
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/arkiv-network/${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ github.sha }}-${{ matrix.arch }}
+            type=ref,event=tag,suffix=-${{ matrix.arch }}
+            type=raw,value=latest-${{ matrix.arch }},enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker-context
+          file: docker-context/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            FOUNDRY_ARCH=${{ matrix.arch }}
+
+      - name: Notify about release
+        env:
+          TRACKER_BACKEND_URL: ${{ secrets.TRACKER_BACKEND_URL }}
+        run: |
+          curl --fail --show-error --silent \
+            -X POST \
+            -H "Content-Type: application/json" \
+            "${TRACKER_BACKEND_URL}/release/publish" \
+            --data-binary @- <<EOF
+          {
+            "builder": "${{ matrix.builder }}-${{ matrix.arch }}",
+            "binaries": ["arkiv-node", "arkiv-cli"],
+            "commit": "${{ github.sha }}",
+            "ref": "${{ github.ref }}",
+            "packages": ["${{ matrix.image }}:${{ github.sha }}-${{ matrix.arch }}"],
+            "description": "${{ matrix.description }} (${{ matrix.arch }})",
+            "repository": "arkiv-network/arkiv-op-reth"
+          }
+          EOF
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: [create-docker-image]
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start node
+        run: |
+          docker run -d --name arkiv-smoke \
+            -p 8545:8545 \
+            ghcr.io/arkiv-network/arkiv-node-dev:${{ github.sha }}-amd64
+
+      - name: Wait for RPC
+        run: |
+          set +e
+          for i in $(seq 1 24); do
+            resp=$(curl -sf -X POST http://localhost:8545 \
+              -H 'Content-Type: application/json' \
+              -d '{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}')
+            if echo "$resp" | grep -q '"result"'; then
+              echo "Node is up: $resp"
+              exit 0
+            fi
+            echo "Attempt $i/24 — retrying in 5s"
+            sleep 5
+          done
+          echo "Timed out waiting for node RPC after 2 minutes" >&2
+          exit 1
+
+      - name: Show node logs on failure
+        if: failure()
+        run: docker logs arkiv-smoke || true
+
+      - name: Stop node
+        if: always()
+        run: docker rm -f arkiv-smoke || true
+
+  merge-manifests:
+    needs: [create-docker-image]
+    if: inputs.arch == 'both' || github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - uses: ./.github/actions/docker-setup
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge per-arch images into multi-arch manifests
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          tags="${SHA}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tags="${tags} ${GITHUB_REF_NAME}"
+          elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            tags="${tags} latest"
+          fi
+
+          merge_image() {
+            local image="$1"
+            local repo="${REGISTRY}/arkiv-network/${image}"
+            for tag in ${tags}; do
+              docker buildx imagetools create \
+                -t "${repo}:${tag}" \
+                "${repo}:${SHA}-amd64" \
+                "${repo}:${SHA}-arm64"
+            done
+          }
+
+          merge_image "arkiv-node"
+          merge_image "arkiv-node-dev"

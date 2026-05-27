@@ -1,31 +1,33 @@
-name: Docker Image (Testing)
+name: Fast lane of CI (Docker Image Internal)
 
 on:
   push:
     branches:
-      - main
+      - develop
     tags:
       - "**"
   workflow_dispatch:
     inputs:
       rust_flags:
-        description: 'Rust flags'
+        description: "Rust flags"
         required: true
-        default: '-C opt-level=z -C target-cpu=x86-64 -C debuginfo=0'
+        default: "-C opt-level=z -C target-cpu=x86-64 -C debuginfo=0"
       rust_version:
-        description: 'Rust version'
+        description: "Rust version"
         required: true
-        default: '1.95.0'
+        default: "1.95.0"
       strip_binaries:
-        description: 'Strip binaries'
+        description: "Strip binaries"
+        type: choice
         required: true
-        default: 'true'
-        options: [ 'true', 'false' ]
+        default: "true"
+        options: ["true", "false"]
       clean_build:
-        description: 'Clear local build cache before building (clean build)'
+        description: "Clear local build cache before building (clean build)"
+        type: choice
         required: true
-        default: 'false'
-        options: [ 'true', 'false' ]
+        default: "false"
+        options: ["true", "false"]
 
 permissions:
   contents: write
@@ -33,12 +35,59 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: arkiv-node-int
-  IMAGE_NAME_DEV: arkiv-node-dev-int
   ARKIV_NODE_IMAGE: ghcr.io/arkiv-network/arkiv-node-int:${{ github.sha }}
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Get foundry cli
+        run: |
+          set -x
+          curl -sL https://github.com/foundry-rs/foundry/releases/download/v1.7.0/foundry_v1.7.0_linux_amd64.tar.gz | tar -xz
+          mv forge cast anvil chisel /usr/local/bin/
+          forge --version
+          chisel --version
+          cast --version
+          anvil --version
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-fast-checks"
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' }}
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run unit tests
+        run: just unit-tests
+
+      - name: Run e2e tests
+        run: just e2e-tests
+
   build:
+    needs: [checks]
     runs-on: op-reth-builder
 
     steps:
@@ -122,64 +171,16 @@ jobs:
           # copy to /opt/yagna_cache and preserve permissions and timestamps
           rsync -a --delete --mkpath target/ "${{ steps.cache_action.outputs.cache_dir }}"
 
-  build-storaged:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Resolve arkiv-storage-service ref
-        id: storaged_ref
-        run: |
-          ref=$(tr -d '[:space:]' < storaged/ref.txt)
-          if [ -z "$ref" ]; then
-            echo "storaged/ref.txt is empty" >&2
-            exit 1
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout arkiv-storage-service
-        uses: actions/checkout@v6
-        with:
-          repository: Arkiv-Network/arkiv-storage-service
-          ref: ${{ steps.storaged_ref.outputs.ref }}
-          path: arkiv-storage-service
-
-      - name: Install Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          check-latest: true
-
-      - name: Build arkiv-storaged
-        working-directory: arkiv-storage-service
-        run: make build
-
-      - name: Upload arkiv-storaged binary
-        uses: actions/upload-artifact@v7
-        with:
-          name: arkiv-storaged-binaries
-          path: arkiv-storage-service/bin/arkiv-storaged
-
   upload-binary-artifact:
     runs-on: ubuntu-latest
     needs:
       - build
-      - build-storaged
-
     steps:
       - name: Download built binaries
         uses: actions/download-artifact@v8
         with:
           name: arkiv-binaries
           path: /tmp/arkiv-binaries
-
-      - name: Download arkiv-storaged binary
-        uses: actions/download-artifact@v8
-        with:
-          name: arkiv-storaged-binaries
-          path: /tmp/arkiv-storaged
 
       - name: Pack binaries
         id: pack
@@ -190,7 +191,6 @@ jobs:
           mkdir -p "$staging_dir"
           cp /tmp/arkiv-binaries/arkiv-node "$staging_dir/arkiv-node"
           cp /tmp/arkiv-binaries/arkiv-cli "$staging_dir/arkiv-cli"
-          cp /tmp/arkiv-storaged/arkiv-storaged "$staging_dir/arkiv-storaged"
           chmod +x "$staging_dir"/*
 
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
@@ -200,7 +200,7 @@ jobs:
           fi
           archive="${RUNNER_TEMP}/${archive_basename}"
 
-          tar -czf "$archive" -C "$staging_dir" arkiv-node arkiv-cli arkiv-storaged
+          tar -czf "$archive" -C "$staging_dir" arkiv-node arkiv-cli
 
           echo "archive=${archive}" >> "$GITHUB_OUTPUT"
           echo "archive_basename=${archive_basename}" >> "$GITHUB_OUTPUT"
@@ -218,7 +218,6 @@ jobs:
             -F "commit=${GITHUB_SHA}" \
             -F "binaries=arkiv-node-int" \
             -F "binaries=arkiv-cli-int" \
-            -F "binaries=arkiv-storaged" \
             -F "name=arkiv-op-reth-integration-tests-linux-amd64" \
             -F "description=Fast integration-test binary build for ${GITHUB_REF_NAME}" \
             -F "file=@${{ steps.pack.outputs.archive }};type=application/gzip"
@@ -231,162 +230,64 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  create-docker-image-fast:
+  create-docker-image:
     runs-on: ubuntu-latest
     needs:
       - build
-      - build-storaged
-    # Covers demo backend startup, node init/launch, and the scripted demo sleeps with headroom.
+    strategy:
+      matrix:
+        include:
+          - image: arkiv-node-int
+            dockerfile: runtime.Dockerfile
+            dev: false
+            description: "Builds for integration tests"
+          - image: arkiv-node-dev-int
+            dockerfile: runtime-dev.Dockerfile
+            dev: true
+            description: "Dev integration image (bundled bootstrap)"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
-      - name: Resolve arkiv-storage-service ref
-        id: storaged_ref
-        run: |
-          ref=$(tr -d '[:space:]' < storaged/ref.txt)
-          if [ -z "$ref" ]; then
-            echo "storaged/ref.txt is empty" >&2
-            exit 1
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - name: Download built binaries
         uses: actions/download-artifact@v8
         with:
           name: arkiv-binaries
           path: /tmp/arkiv-binaries
-
-      - name: Download arkiv-storaged binary
-        uses: actions/download-artifact@v8
-        with:
-          name: arkiv-storaged-binaries
-          path: /tmp/arkiv-storaged
 
       - name: Prepare Docker context
         run: |
           mkdir -p docker-context/build-artifacts
-          cp docker/runtime.Dockerfile docker-context/Dockerfile
+          cp docker/${{ matrix.dockerfile }} docker-context/Dockerfile
           cp /tmp/arkiv-binaries/arkiv-node docker-context/build-artifacts/arkiv-node
           cp /tmp/arkiv-binaries/arkiv-cli docker-context/build-artifacts/arkiv-cli
-          cp /tmp/arkiv-storaged/arkiv-storaged docker-context/build-artifacts/arkiv-storaged
           chmod +x docker-context/build-artifacts/*
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/arkiv-network/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ github.sha }}
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      - name: Build and push integration Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: docker-context
-          file: docker-context/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Notify about release
-        env:
-          TRACKER_BACKEND_URL: ${{ secrets.TRACKER_BACKEND_URL }}
+      - name: Prepare dev extras
+        if: matrix.dev
         run: |
-          curl --fail --show-error --silent \
-            -X POST \
-            -H "Content-Type: application/json" \
-            "${TRACKER_BACKEND_URL}/release/publish" \
-            --data-binary @- <<EOF
-          {
-            "builder": "create-docker-image-fast",
-            "binaries": ["arkiv-node-int", "arkiv-cli-int", "arkiv-storaged"],
-            "commit": "${{ github.sha }}",
-            "ref": "${{ github.ref }}",
-            "packages": ["arkiv-node-int:${{ github.sha }}"],
-            "description": "Builds for integration tests with arkiv-storaged:${{ steps.storaged_ref.outputs.ref }}",
-            "repository": "arkiv-network/arkiv-op-reth"
-          }
-          EOF
-
-  create-docker-image-dev-fast:
-    runs-on: ubuntu-latest
-    needs:
-      - build
-      - build-storaged
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Resolve arkiv-storage-service ref
-        id: storaged_ref
-        run: |
-          ref=$(tr -d '[:space:]' < storaged/ref.txt)
-          if [ -z "$ref" ]; then
-            echo "storaged/ref.txt is empty" >&2
-            exit 1
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-
-      - name: Download built binaries
-        uses: actions/download-artifact@v8
-        with:
-          name: arkiv-binaries
-          path: /tmp/arkiv-binaries
-
-      - name: Download arkiv-storaged binary
-        uses: actions/download-artifact@v8
-        with:
-          name: arkiv-storaged-binaries
-          path: /tmp/arkiv-storaged
-
-      - name: Prepare Docker context
-        run: |
-          mkdir -p docker-context/build-artifacts docker-context/chainspec docker-context/docker
-          cp docker/runtime-dev.Dockerfile docker-context/Dockerfile
+          mkdir -p docker-context/chainspec docker-context/docker
           cp docker/dev-entrypoint.sh docker-context/docker/dev-entrypoint.sh
           cp docker/fund-account.sh docker-context/docker/fund-account.sh
           cp chainspec/dev.base.json docker-context/chainspec/dev.base.json
-          cp /tmp/arkiv-binaries/arkiv-node docker-context/build-artifacts/arkiv-node
-          cp /tmp/arkiv-binaries/arkiv-cli docker-context/build-artifacts/arkiv-cli
-          cp /tmp/arkiv-storaged/arkiv-storaged docker-context/build-artifacts/arkiv-storaged
-          chmod +x docker-context/build-artifacts/* docker-context/docker/dev-entrypoint.sh docker-context/docker/fund-account.sh
+          chmod +x docker-context/docker/dev-entrypoint.sh docker-context/docker/fund-account.sh
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+      - uses: ./.github/actions/docker-setup
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/arkiv-network/${{ env.IMAGE_NAME_DEV }}
+          images: ${{ env.REGISTRY }}/arkiv-network/${{ matrix.image }}
           tags: |
             type=raw,value=${{ github.sha }}
             type=ref,event=tag
             type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-      - name: Build and push integration dev Docker image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: docker-context
@@ -405,21 +306,69 @@ jobs:
             "${TRACKER_BACKEND_URL}/release/publish" \
             --data-binary @- <<EOF
           {
-            "builder": "create-docker-image-dev-fast",
-            "binaries": ["arkiv-node-int", "arkiv-cli-int", "arkiv-storaged"],
+            "builder": "create-docker-image-${{ matrix.image }}",
+            "binaries": ["arkiv-node-int", "arkiv-cli-int"],
             "commit": "${{ github.sha }}",
             "ref": "${{ github.ref }}",
-            "packages": ["arkiv-node-dev-int:${{ github.sha }}"],
-            "description": "Dev integration image (bundled bootstrap) with arkiv-storaged:${{ steps.storaged_ref.outputs.ref }}",
+            "packages": ["${{ matrix.image }}:${{ github.sha }}"],
+            "description": "${{ matrix.description }}",
             "repository": "arkiv-network/arkiv-op-reth"
           }
           EOF
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: [create-docker-image]
+
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start node
+        run: |
+          docker run -d --name arkiv-smoke \
+            -p 8545:8545 \
+            ghcr.io/arkiv-network/arkiv-node-dev-int:${{ github.sha }}
+
+      - name: Wait for RPC
+        run: |
+          set +e
+          for i in $(seq 1 24); do
+            resp=$(curl -sf -X POST http://localhost:8545 \
+              -H 'Content-Type: application/json' \
+              -d '{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}')
+            if echo "$resp" | grep -q '"result"'; then
+              echo "Node is up: $resp"
+              exit 0
+            fi
+            echo "Attempt $i/24 — retrying in 5s"
+            sleep 5
+          done
+          echo "Timed out waiting for node RPC after 2 minutes" >&2
+          exit 1
+
+      - name: Show node logs on failure
+        if: failure()
+        run: docker logs arkiv-smoke || true
+
+      - name: Stop node
+        if: always()
+        run: docker rm -f arkiv-smoke || true
 
   demo-e2e-from-docker:
     runs-on: ubuntu-latest
     needs:
-      - create-docker-image-fast
+      - create-docker-image
     # Covers demo backend startup, node init/launch, and the scripted demo sleeps with headroom.
+    strategy:
+      matrix:
+        include:
+          - compose_args: ""
+          - compose_args: "-f docker-compose-separated.yml"
 
     steps:
       - name: Checkout repository
@@ -438,7 +387,7 @@ jobs:
         run: |
           cd compose
           ./bootstrap-contracts.sh
-          docker compose up -d
+          docker compose ${{ matrix.compose_args }} up -d
 
       - name: Set up just
         uses: extractions/setup-just@v4
@@ -454,13 +403,10 @@ jobs:
           anvil --version
 
       - name: Show docker status
-        run: |
-          docker ps
+        run: docker ps
 
       - name: Show docker logs before start of the test
-        run: |
-          cd compose
-          docker compose logs
+        run: cd compose && docker compose ${{ matrix.compose_args }} logs
 
       - name: Start demo
         run: |
@@ -474,81 +420,8 @@ jobs:
 
       - name: Stop docker
         if: always()
-        run: |
-          cd compose
-          docker compose down
+        run: cd compose && docker compose ${{ matrix.compose_args }} down
 
       - name: Show docker logs after test
         if: always()
-        run: |
-          cd compose
-          docker compose logs
-
-  demo-e2e-from-docker-separated:
-    runs-on: ubuntu-latest
-    needs:
-      - create-docker-image-fast
-    # Covers demo backend startup, node init/launch, and the scripted demo sleeps with headroom.
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run docker
-        env:
-          ARKIV_NODE_IMAGE: ${{ env.ARKIV_NODE_IMAGE }}
-        run: |
-          cd compose
-          ./bootstrap-contracts.sh
-          docker compose -f docker-compose-separated.yml up -d
-
-      - name: Set up just
-        uses: extractions/setup-just@v4
-
-      - name: Get foundry cli
-        run: |
-          set -x
-          curl -sL https://github.com/foundry-rs/foundry/releases/download/v1.7.0/foundry_v1.7.0_linux_amd64.tar.gz | tar -xz
-          mv forge cast anvil chisel /usr/local/bin/
-          forge --version
-          chisel --version
-          cast --version
-          anvil --version
-
-      - name: Show docker status
-        run: |
-          docker ps
-
-      - name: Show docker logs before start of the test
-        run: |
-          cd compose
-          docker compose logs
-
-      - name: Start demo
-        run: |
-          sudo chown -R 714:714 demo/fixtures
-          mkdir -p tmp
-          sudo chown -R 714:714 tmp
-          sudo chmod 777 tmp
-          just -f demo/justfile full
-        env:
-          ARKIV_CLI: docker run -v ${{ github.workspace }}/tmp:/app/tmp -v ${{ github.workspace }}/demo/fixtures:/app/demo/fixtures --network host --entrypoint=arkiv-cli ${{ env.ARKIV_NODE_IMAGE }}
-
-      - name: Stop docker
-        if: always()
-        run: |
-          cd compose
-          docker compose down
-
-      - name: Show docker logs after test
-        if: always()
-        run: |
-          cd compose
-          docker compose logs
+        run: cd compose && docker compose ${{ matrix.compose_args }} logs

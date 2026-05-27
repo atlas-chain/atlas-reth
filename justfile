@@ -101,7 +101,6 @@ node-dev-resume *args='':
     fi
     echo "datadir: $DATADIR"
     echo "genesis: $GENESIS"
-    echo "registry: {{ registry }}"
     echo "dev account: {{ dev_addr }}"
     {{ arkiv_node }} node \
         --chain "$GENESIS" \

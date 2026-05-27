@@ -334,43 +334,11 @@ jobs:
     if: github.event_name != 'pull_request'
 
     steps:
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/smoke-test
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Start node
-        run: |
-          docker run -d --name arkiv-smoke \
-            -p 8545:8545 \
-            ghcr.io/arkiv-network/arkiv-node-dev:${{ github.sha }}-amd64
-
-      - name: Wait for RPC
-        run: |
-          set +e
-          for i in $(seq 1 24); do
-            resp=$(curl -sf -X POST http://localhost:8545 \
-              -H 'Content-Type: application/json' \
-              -d '{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}')
-            if echo "$resp" | grep -q '"result"'; then
-              echo "Node is up: $resp"
-              exit 0
-            fi
-            echo "Attempt $i/24 — retrying in 5s"
-            sleep 5
-          done
-          echo "Timed out waiting for node RPC after 2 minutes" >&2
-          exit 1
-
-      - name: Show node logs on failure
-        if: failure()
-        run: docker logs arkiv-smoke || true
-
-      - name: Stop node
-        if: always()
-        run: docker rm -f arkiv-smoke || true
+          image: ghcr.io/arkiv-network/arkiv-node-dev:${{ github.sha }}-amd64
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   merge-manifests:
     needs: [create-docker-image]

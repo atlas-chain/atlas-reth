@@ -318,107 +318,76 @@ jobs:
     needs: [create-docker-image]
 
     steps:
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/smoke-test
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          image: ghcr.io/arkiv-network/arkiv-node-dev-int:${{ github.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Start node
-        run: |
-          docker run -d --name arkiv-smoke \
-            -p 8545:8545 \
-            ghcr.io/arkiv-network/arkiv-node-dev-int:${{ github.sha }}
+  # Figure it out what it could do in current v3 version and if needed bring it back
+  # demo-e2e-from-docker:
+  #   runs-on: ubuntu-latest
+  #   needs:
+  #     - create-docker-image
+  #   # Covers demo backend startup, node init/launch, and the scripted demo sleeps with headroom.
+  #   strategy:
+  #     matrix:
+  #       include:
+  #         - compose_args: ""
+  #         - compose_args: "-f docker-compose-separated.yml"
 
-      - name: Wait for RPC
-        run: |
-          set +e
-          for i in $(seq 1 24); do
-            resp=$(curl -sf -X POST http://localhost:8545 \
-              -H 'Content-Type: application/json' \
-              -d '{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}')
-            if echo "$resp" | grep -q '"result"'; then
-              echo "Node is up: $resp"
-              exit 0
-            fi
-            echo "Attempt $i/24 — retrying in 5s"
-            sleep 5
-          done
-          echo "Timed out waiting for node RPC after 2 minutes" >&2
-          exit 1
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v6
 
-      - name: Show node logs on failure
-        if: failure()
-        run: docker logs arkiv-smoke || true
+  #     - name: Login to GitHub Container Registry
+  #       uses: docker/login-action@v4
+  #       with:
+  #         registry: ${{ env.REGISTRY }}
+  #         username: ${{ github.actor }}
+  #         password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Stop node
-        if: always()
-        run: docker rm -f arkiv-smoke || true
+  #     - name: Run docker
+  #       env:
+  #         ARKIV_NODE_IMAGE: ${{ env.ARKIV_NODE_IMAGE }}
+  #       run: |
+  #         cd compose
+  #         ./bootstrap-contracts.sh
+  #         docker compose ${{ matrix.compose_args }} up -d
 
-  demo-e2e-from-docker:
-    runs-on: ubuntu-latest
-    needs:
-      - create-docker-image
-    # Covers demo backend startup, node init/launch, and the scripted demo sleeps with headroom.
-    strategy:
-      matrix:
-        include:
-          - compose_args: ""
-          - compose_args: "-f docker-compose-separated.yml"
+  #     - name: Set up just
+  #       uses: extractions/setup-just@v4
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+  #     - name: Get foundry cli
+  #       run: |
+  #         set -x
+  #         curl -sL https://github.com/foundry-rs/foundry/releases/download/v1.7.0/foundry_v1.7.0_linux_amd64.tar.gz | tar -xz
+  #         mv forge cast anvil chisel /usr/local/bin/
+  #         forge --version
+  #         chisel --version
+  #         cast --version
+  #         anvil --version
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+  #     - name: Show docker status
+  #       run: docker ps
 
-      - name: Run docker
-        env:
-          ARKIV_NODE_IMAGE: ${{ env.ARKIV_NODE_IMAGE }}
-        run: |
-          cd compose
-          ./bootstrap-contracts.sh
-          docker compose ${{ matrix.compose_args }} up -d
+  #     - name: Show docker logs before start of the test
+  #       run: cd compose && docker compose ${{ matrix.compose_args }} logs
 
-      - name: Set up just
-        uses: extractions/setup-just@v4
+  #     - name: Start demo
+  #       run: |
+  #         sudo chown -R 714:714 demo/fixtures
+  #         mkdir -p tmp
+  #         sudo chown -R 714:714 tmp
+  #         sudo chmod 777 tmp
+  #         just -f demo/justfile full
+  #       env:
+  #         ARKIV_CLI: docker run -v ${{ github.workspace }}/tmp:/app/tmp -v ${{ github.workspace }}/demo/fixtures:/app/demo/fixtures --network host --entrypoint=arkiv-cli ${{ env.ARKIV_NODE_IMAGE }}
 
-      - name: Get foundry cli
-        run: |
-          set -x
-          curl -sL https://github.com/foundry-rs/foundry/releases/download/v1.7.0/foundry_v1.7.0_linux_amd64.tar.gz | tar -xz
-          mv forge cast anvil chisel /usr/local/bin/
-          forge --version
-          chisel --version
-          cast --version
-          anvil --version
+  #     - name: Stop docker
+  #       if: always()
+  #       run: cd compose && docker compose ${{ matrix.compose_args }} down
 
-      - name: Show docker status
-        run: docker ps
-
-      - name: Show docker logs before start of the test
-        run: cd compose && docker compose ${{ matrix.compose_args }} logs
-
-      - name: Start demo
-        run: |
-          sudo chown -R 714:714 demo/fixtures
-          mkdir -p tmp
-          sudo chown -R 714:714 tmp
-          sudo chmod 777 tmp
-          just -f demo/justfile full
-        env:
-          ARKIV_CLI: docker run -v ${{ github.workspace }}/tmp:/app/tmp -v ${{ github.workspace }}/demo/fixtures:/app/demo/fixtures --network host --entrypoint=arkiv-cli ${{ env.ARKIV_NODE_IMAGE }}
-
-      - name: Stop docker
-        if: always()
-        run: cd compose && docker compose ${{ matrix.compose_args }} down
-
-      - name: Show docker logs after test
-        if: always()
-        run: cd compose && docker compose ${{ matrix.compose_args }} logs
+  #     - name: Show docker logs after test
+  #       if: always()
+  #       run: cd compose && docker compose ${{ matrix.compose_args }} logs

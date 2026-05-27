@@ -1,0 +1,51 @@
+name: Smoke Test
+description: Start a node Docker image and verify the RPC responds to eth_getBlockNumber
+inputs:
+  image:
+    description: "Docker image to test"
+    required: true
+  token:
+    description: "GitHub token for GHCR login"
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.token }}
+
+    - name: Start node
+      shell: bash
+      run: |
+        docker run -d --name arkiv-smoke \
+          -p 8545:8545 \
+          ${{ inputs.image }}
+
+    - name: Wait for RPC
+      shell: bash
+      run: |
+        for i in $(seq 1 24); do
+          resp=$(curl -s --max-time 5 -X POST http://localhost:8545 \
+            -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' || true)
+          echo "Attempt $i/24 — response: $resp"
+          if echo "$resp" | grep -q '"result"'; then
+            echo "Node is up"
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "Timed out waiting for node RPC after 2 minutes" >&2
+        exit 1
+
+    - name: Show node logs on failure
+      if: failure()
+      shell: bash
+      run: docker logs arkiv-smoke || true
+
+    - name: Stop node
+      if: always()
+      shell: bash
+      run: docker rm -f arkiv-smoke || true

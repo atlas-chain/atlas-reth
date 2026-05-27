@@ -943,14 +943,12 @@ async fn main() -> Result<()> {
                         size,
                         btl,
                         attributes,
-                    } => {
-                        Operation::create(
-                            *btl,
-                            resolve_payload(payload.as_deref(), *size)?,
-                            Mime128::encode(content_type)?,
-                            build_attributes(attributes, &resolve)?,
-                        )
-                    }
+                    } => Operation::create(
+                        *btl,
+                        resolve_payload(payload.as_deref(), *size)?,
+                        Mime128::encode(content_type)?,
+                        build_attributes(attributes, &resolve)?,
+                    ),
                     BatchOp::Update {
                         entity_key,
                         content_type,
@@ -963,10 +961,9 @@ async fn main() -> Result<()> {
                         Mime128::encode(content_type)?,
                         build_attributes(attributes, &resolve)?,
                     ),
-                    BatchOp::Extend {
-                        entity_key,
-                        btl,
-                    } => Operation::extend(resolve(entity_key)?, *btl),
+                    BatchOp::Extend { entity_key, btl } => {
+                        Operation::extend(resolve(entity_key)?, *btl)
+                    }
                     BatchOp::Transfer {
                         entity_key,
                         new_owner,
@@ -988,11 +985,7 @@ async fn main() -> Result<()> {
             print_events(receipt.inner.logs());
         }
 
-        Command::Spam {
-            count,
-            size,
-            btl,
-        } => {
+        Command::Spam { count, size, btl } => {
             let nonce_start = provider.get_transaction_count(signer_address).await?;
 
             // Fire all transactions, retrying on pool-full errors

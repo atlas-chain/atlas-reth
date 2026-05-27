@@ -43,9 +43,15 @@ pub enum Query {
     /// Leaf inequality: `key != value`.
     Neq { key: AnnotKey, value: AnnotVal },
     /// Leaf inclusion: `key IN (v1 v2 …)`. `values` is non-empty.
-    In { key: AnnotKey, values: Vec<AnnotVal> },
+    In {
+        key: AnnotKey,
+        values: Vec<AnnotVal>,
+    },
     /// Leaf negated inclusion: `key NOT IN (...)`. `values` is non-empty.
-    NotIn { key: AnnotKey, values: Vec<AnnotVal> },
+    NotIn {
+        key: AnnotKey,
+        values: Vec<AnnotVal>,
+    },
     /// Leaf range: `key > value`.
     Gt { key: AnnotKey, value: AnnotVal },
     /// Leaf range: `key >= value`.
@@ -490,24 +496,36 @@ mod tests {
     fn eq_user_string() {
         assert_eq!(
             p(r#"tag = "music""#),
-            Query::Eq { key: user("tag"), value: val(b"music") },
+            Query::Eq {
+                key: user("tag"),
+                value: val(b"music")
+            },
         );
     }
 
     #[test]
     fn eq_user_numeric_is_32_bytes() {
-        assert_eq!(p("score = 42"), Query::Eq { key: user("score"), value: user_num(42) });
+        assert_eq!(
+            p("score = 42"),
+            Query::Eq {
+                key: user("score"),
+                value: user_num(42)
+            }
+        );
     }
 
     #[test]
     fn eq_builtin_owner_address() {
         let addr = [
-            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33,
-            0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
         ];
         assert_eq!(
             p("$owner = 0xaabbccddeeff00112233445566778899aabbccdd"),
-            Query::Eq { key: builtin(BuiltIn::Owner), value: val(&addr) },
+            Query::Eq {
+                key: builtin(BuiltIn::Owner),
+                value: val(&addr)
+            },
         );
     }
 
@@ -528,7 +546,10 @@ mod tests {
         k[..20].copy_from_slice(&[0x11; 20]);
         assert_eq!(
             p("$key = 0x1111111111111111111111111111111111111111000000000000000000000000"),
-            Query::Eq { key: builtin(BuiltIn::Key), value: val(&k) },
+            Query::Eq {
+                key: builtin(BuiltIn::Key),
+                value: val(&k)
+            },
         );
     }
 
@@ -541,11 +562,16 @@ mod tests {
         k[..20].copy_from_slice(&[0x22; 20]);
         let unquoted =
             p("$key = 0x2222222222222222222222222222222222222222000000000000000000000000");
-        let quoted = p(
-            r#"$key = "0x2222222222222222222222222222222222222222000000000000000000000000""#,
-        );
+        let quoted =
+            p(r#"$key = "0x2222222222222222222222222222222222222222000000000000000000000000""#);
         assert_eq!(quoted, unquoted);
-        assert_eq!(quoted, Query::Eq { key: builtin(BuiltIn::Key), value: val(&k) });
+        assert_eq!(
+            quoted,
+            Query::Eq {
+                key: builtin(BuiltIn::Key),
+                value: val(&k)
+            }
+        );
     }
 
     #[test]
@@ -564,7 +590,10 @@ mod tests {
     fn eq_builtin_content_type_is_raw_bytes() {
         assert_eq!(
             p(r#"$contentType = "text/plain""#),
-            Query::Eq { key: builtin(BuiltIn::ContentType), value: val(b"text/plain") },
+            Query::Eq {
+                key: builtin(BuiltIn::ContentType),
+                value: val(b"text/plain")
+            },
         );
     }
 
@@ -572,7 +601,10 @@ mod tests {
     fn neq() {
         assert_eq!(
             p(r#"tag != "music""#),
-            Query::Neq { key: user("tag"), value: val(b"music") },
+            Query::Neq {
+                key: user("tag"),
+                value: val(b"music")
+            },
         );
     }
 
@@ -590,11 +622,9 @@ mod tests {
         let a1 = [0x11u8; 20];
         let a2 = [0x22u8; 20];
         assert_eq!(
-            p(
-                "$owner IN \
+            p("$owner IN \
                  (0x1111111111111111111111111111111111111111 \
-                  0x2222222222222222222222222222222222222222)",
-            ),
+                  0x2222222222222222222222222222222222222222)",),
             Query::In {
                 key: builtin(BuiltIn::Owner),
                 values: vec![val(&a1), val(&a2)],
@@ -623,7 +653,8 @@ mod tests {
 
     #[test]
     fn and_chains() {
-        let q = p(r#"tag = "a" && score = 1 && $owner != 0x1111111111111111111111111111111111111111"#);
+        let q =
+            p(r#"tag = "a" && score = 1 && $owner != 0x1111111111111111111111111111111111111111"#);
         // Left-associative: ((tag=a && score=1) && $owner!=...)
         match q {
             Query::And(left, right) => {

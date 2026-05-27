@@ -18,7 +18,9 @@
 use eyre::Result;
 
 use super::parser::{AnnotKey, AnnotVal, Query, parse};
-use crate::{Bitmap, EntityRlp, StateAdapter, all_entities, read_index_tree, read_pair_bitmap, resolve_id};
+use crate::{
+    Bitmap, EntityRlp, StateAdapter, all_entities, read_index_tree, read_pair_bitmap, resolve_id,
+};
 
 impl Query {
     /// Evaluate the AST against `state`, returning the bitmap of
@@ -119,7 +121,13 @@ fn eval<S: StateAdapter>(query: &Query, state: &mut S) -> Result<Bitmap> {
         }
         Query::NotGlob { key, value } => {
             let mut all = all_entities(state)?;
-            let hit = eval(&Query::Glob { key: key.clone(), value: value.clone() }, state)?;
+            let hit = eval(
+                &Query::Glob {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                state,
+            )?;
             all.subtract(&hit);
             Ok(all)
         }
@@ -131,11 +139,7 @@ fn read_eq<S: StateAdapter>(state: &mut S, key: &AnnotKey, value: &AnnotVal) -> 
 }
 
 /// OR-union of the bitmaps for each value in an `IN (...)` list.
-fn read_in<S: StateAdapter>(
-    state: &mut S,
-    key: &AnnotKey,
-    values: &[AnnotVal],
-) -> Result<Bitmap> {
+fn read_in<S: StateAdapter>(state: &mut S, key: &AnnotKey, values: &[AnnotVal]) -> Result<Bitmap> {
     let mut acc = Bitmap::new();
     for v in values {
         let bm = read_pair_bitmap(state, key.pair_key_bytes(), &v.0)?;
@@ -181,11 +185,7 @@ pub struct Page {
 /// IDs that fail to resolve (e.g. entity tombstoned between the
 /// bitmap read and the resolve — possible under concurrent writes)
 /// are skipped silently and don't count toward `page_size`.
-pub fn execute<S: StateAdapter>(
-    state: &mut S,
-    query: &str,
-    params: PageParams,
-) -> Result<Page> {
+pub fn execute<S: StateAdapter>(state: &mut S, query: &str, params: PageParams) -> Result<Page> {
     eyre::ensure!(params.page_size > 0, "page_size must be > 0");
 
     let parsed = parse(query)?;
@@ -220,5 +220,8 @@ pub fn execute<S: StateAdapter>(
     }
 
     let next_cursor = if has_more { last_returned_id } else { None };
-    Ok(Page { entries, next_cursor })
+    Ok(Page {
+        entries,
+        next_cursor,
+    })
 }

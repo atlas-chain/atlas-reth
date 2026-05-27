@@ -26,7 +26,7 @@
 //! pure narrative + assertions.
 
 use alloy_primitives::{Address, B256};
-use arkiv_e2e::{CreateOp, UpdateOp, WorldOps, boot, OP_UPDATE, Operation};
+use arkiv_e2e::{CreateOp, OP_UPDATE, Operation, UpdateOp, WorldOps, boot};
 use arkiv_node::rpc::EntityData;
 
 /// Hex-encode without `0x` prefix — matches the wire format the SDK
@@ -115,18 +115,24 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     // ── 2. Query built-ins ──────────────────────────────────────────
 
-    let alice_owned = world.query(&format!("$owner = 0x{}", hex_addr(alice))).await?;
+    let alice_owned = world
+        .query(&format!("$owner = 0x{}", hex_addr(alice)))
+        .await?;
     assert_eq!(ids_owned_by(&alice_owned, alice), vec![alice_key]);
 
     let html = world.query(r#"$contentType = "text/html""#).await?;
     assert_eq!(html.len(), 1);
     assert_eq!(html[0].key, bob_key);
 
-    let bob_created = world.query(&format!("$creator = 0x{}", hex_addr(bob))).await?;
+    let bob_created = world
+        .query(&format!("$creator = 0x{}", hex_addr(bob)))
+        .await?;
     assert_eq!(bob_created.len(), 1);
     assert_eq!(bob_created[0].key, bob_key);
 
-    let by_key = world.query(&format!("$key = 0x{}", hex_key(alice_key))).await?;
+    let by_key = world
+        .query(&format!("$key = 0x{}", hex_key(alice_key)))
+        .await?;
     assert_eq!(by_key.len(), 1);
     assert_eq!(by_key[0].key, alice_key);
 
@@ -141,7 +147,9 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     // ── 4. Boolean combinators ──────────────────────────────────────
 
-    let plain_and_music = world.query(r#"$contentType = "text/plain" && tag = "music""#).await?;
+    let plain_and_music = world
+        .query(r#"$contentType = "text/plain" && tag = "music""#)
+        .await?;
     assert_eq!(plain_and_music.len(), 1);
     assert_eq!(plain_and_music[0].key, alice_key);
 
@@ -209,20 +217,35 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     // ── 7. EXTEND ───────────────────────────────────────────────────
 
-    let bob_entity = world.query(&format!("$key = 0x{}", hex_key(bob_key))).await?;
-    let old_expiration = bob_entity[0].expires_at.expect("expires_at included by default");
+    let bob_entity = world
+        .query(&format!("$key = 0x{}", hex_key(bob_key)))
+        .await?;
+    let old_expiration = bob_entity[0]
+        .expires_at
+        .expect("expires_at included by default");
     world.extend(1, bob_key, 5_000).await?;
 
-    let bob_entity = world.query(&format!("$key = 0x{}", hex_key(bob_key))).await?;
-    let new_expiration = bob_entity[0].expires_at.expect("expires_at included by default");
+    let bob_entity = world
+        .query(&format!("$key = 0x{}", hex_key(bob_key)))
+        .await?;
+    let new_expiration = bob_entity[0]
+        .expires_at
+        .expect("expires_at included by default");
     assert!(
         new_expiration > old_expiration,
         "extend should raise expiration: {old_expiration} -> {new_expiration}"
     );
 
     // Old expiration bitmap is empty; new one contains bob.
-    assert!(world.query(&format!("$expiration = {old_expiration}")).await?.is_empty());
-    let still_bob = world.query(&format!("$expiration = {new_expiration}")).await?;
+    assert!(
+        world
+            .query(&format!("$expiration = {old_expiration}"))
+            .await?
+            .is_empty()
+    );
+    let still_bob = world
+        .query(&format!("$expiration = {new_expiration}"))
+        .await?;
     assert_eq!(still_bob.len(), 1);
     assert_eq!(still_bob[0].key, bob_key);
 
@@ -233,13 +256,17 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     world.transfer(0, alice_key, carol).await?;
 
-    let alice_owned = world.query(&format!("$owner = 0x{}", hex_addr(alice))).await?;
+    let alice_owned = world
+        .query(&format!("$owner = 0x{}", hex_addr(alice)))
+        .await?;
     assert!(
         alice_owned.is_empty(),
         "alice no longer owns anything: {:?}",
         alice_owned.iter().map(|e| e.key).collect::<Vec<_>>()
     );
-    let carol_owned = world.query(&format!("$owner = 0x{}", hex_addr(carol))).await?;
+    let carol_owned = world
+        .query(&format!("$owner = 0x{}", hex_addr(carol)))
+        .await?;
     let carol_keys: Vec<B256> = carol_owned.iter().map(|e| e.key).collect();
     assert!(carol_keys.contains(&alice_key));
     assert!(carol_keys.contains(&carol_key));
@@ -251,7 +278,9 @@ async fn full_pipeline() -> eyre::Result<()> {
         operationType: OP_UPDATE,
         entityKey: alice_key,
         payload: alloy_primitives::Bytes::from_static(b"sneaky"),
-        contentType: arkiv_e2e::Mime128 { data: Default::default() },
+        contentType: arkiv_e2e::Mime128 {
+            data: Default::default(),
+        },
         attributes: vec![],
         btl: 0,
         newOwner: Address::ZERO,
@@ -264,13 +293,20 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     world.delete(1, bob_key).await?;
 
-    let bob_gone = world.query(&format!("$key = 0x{}", hex_key(bob_key))).await?;
-    assert!(bob_gone.is_empty(), "bob's entity should be gone from $key bitmap");
+    let bob_gone = world
+        .query(&format!("$key = 0x{}", hex_key(bob_key)))
+        .await?;
+    assert!(
+        bob_gone.is_empty(),
+        "bob's entity should be gone from $key bitmap"
+    );
 
     let by_news = world.query(r#"tag = "news""#).await?;
     assert!(by_news.is_empty(), "bob's tag=news bitmap should be empty");
 
-    let by_owner_bob = world.query(&format!("$owner = 0x{}", hex_addr(bob))).await?;
+    let by_owner_bob = world
+        .query(&format!("$owner = 0x{}", hex_addr(bob)))
+        .await?;
     assert!(by_owner_bob.is_empty(), "$owner=bob bitmap should be empty");
 
     // ── 10. Historical query (atBlock) ──────────────────────────────
@@ -312,7 +348,11 @@ async fn full_pipeline() -> eyre::Result<()> {
     }
 
     let all_bulk = world.query_paginated(r#"bulk = "true""#, 10).await?;
-    assert_eq!(all_bulk.len(), 30, "all 30 bulk entities returned across pages");
+    assert_eq!(
+        all_bulk.len(),
+        30,
+        "all 30 bulk entities returned across pages"
+    );
 
     // No duplicates between pages.
     let mut keys: Vec<B256> = all_bulk.iter().map(|e| e.key).collect();
@@ -342,16 +382,24 @@ async fn full_pipeline() -> eyre::Result<()> {
     }
     let block_after_range_batch = world.head_block().await?;
 
-    let gt50 = world.query(r#"price > 50 && range_batch = "price_test""#).await?;
+    let gt50 = world
+        .query(r#"price > 50 && range_batch = "price_test""#)
+        .await?;
     assert_eq!(gt50.len(), 2, "price > 50: expect 75 and 100");
 
-    let gte50 = world.query(r#"price >= 50 && range_batch = "price_test""#).await?;
+    let gte50 = world
+        .query(r#"price >= 50 && range_batch = "price_test""#)
+        .await?;
     assert_eq!(gte50.len(), 3, "price >= 50: expect 50, 75, 100");
 
-    let lt50 = world.query(r#"price < 50 && range_batch = "price_test""#).await?;
+    let lt50 = world
+        .query(r#"price < 50 && range_batch = "price_test""#)
+        .await?;
     assert_eq!(lt50.len(), 2, "price < 50: expect 10, 25");
 
-    let lte50 = world.query(r#"price <= 50 && range_batch = "price_test""#).await?;
+    let lte50 = world
+        .query(r#"price <= 50 && range_batch = "price_test""#)
+        .await?;
     assert_eq!(lte50.len(), 3, "price <= 50: expect 10, 25, 50");
 
     // Composed range: 25 <= price <= 75
@@ -368,7 +416,11 @@ async fn full_pipeline() -> eyre::Result<()> {
             block_after_range_batch,
         ))
         .await?;
-    assert_eq!(by_block.len(), 5, "$createdAtBlock range covers all 5 price entities");
+    assert_eq!(
+        by_block.len(),
+        5,
+        "$createdAtBlock range covers all 5 price entities"
+    );
 
     // ── 13. Glob queries ─────────────────────────────────────────────
     //
@@ -414,7 +466,11 @@ async fn full_pipeline() -> eyre::Result<()> {
     let non_videos = world
         .query(r#"glob_batch = "ct_test" && $contentType !~ "video/*""#)
         .await?;
-    assert_eq!(non_videos.len(), 1, "$contentType !~ video/*: only audio/mp3");
+    assert_eq!(
+        non_videos.len(),
+        1,
+        "$contentType !~ video/*: only audio/mp3"
+    );
     assert_eq!(non_videos[0].content_type.as_deref(), Some("audio/mp3"));
 
     // Glob on a user string attribute.

@@ -320,7 +320,10 @@ fn create_with_price(state: &mut InMemoryStateAdapter, owner: Address, key: B256
         b"".to_vec(),
         b"text/plain".to_vec(),
         vec![],
-        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(price) }],
+        vec![NumericAnnotation {
+            key: b"price".to_vec(),
+            value: U256::from(price),
+        }],
     )
     .expect("create");
 }
@@ -371,7 +374,10 @@ fn range_and_equality_combined() {
         b"".to_vec(),
         b"image/png".to_vec(),
         vec![],
-        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(20) }],
+        vec![NumericAnnotation {
+            key: b"price".to_vec(),
+            value: U256::from(20),
+        }],
     )
     .expect("create");
     // id=1: text/plain, price=20
@@ -384,7 +390,10 @@ fn range_and_equality_combined() {
         b"".to_vec(),
         b"text/plain".to_vec(),
         vec![],
-        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(20) }],
+        vec![NumericAnnotation {
+            key: b"price".to_vec(),
+            value: U256::from(20),
+        }],
     )
     .expect("create");
     // id=2: image/png, price=5
@@ -397,10 +406,16 @@ fn range_and_equality_combined() {
         b"".to_vec(),
         b"image/png".to_vec(),
         vec![],
-        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(5) }],
+        vec![NumericAnnotation {
+            key: b"price".to_vec(),
+            value: U256::from(5),
+        }],
     )
     .expect("create");
-    assert_eq!(ids(&mut s, r#"$contentType = "image/png" && price > 10"#), vec![0]);
+    assert_eq!(
+        ids(&mut s, r#"$contentType = "image/png" && price > 10"#),
+        vec![0]
+    );
 }
 
 #[test]
@@ -436,7 +451,10 @@ fn update_moves_index_value() {
         b"".to_vec(),
         b"text/plain".to_vec(),
         vec![],
-        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(100) }],
+        vec![NumericAnnotation {
+            key: b"price".to_vec(),
+            value: U256::from(100),
+        }],
     )
     .expect("create");
     update(
@@ -446,7 +464,10 @@ fn update_moves_index_value() {
         b"".to_vec(),
         b"text/plain".to_vec(),
         vec![],
-        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(200) }],
+        vec![NumericAnnotation {
+            key: b"price".to_vec(),
+            value: U256::from(200),
+        }],
     )
     .expect("update");
     assert_eq!(ids(&mut s, "price > 150"), vec![0]);
@@ -466,7 +487,10 @@ fn delete_removes_index_entry() {
         b"".to_vec(),
         b"text/plain".to_vec(),
         vec![],
-        vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(42) }],
+        vec![NumericAnnotation {
+            key: b"price".to_vec(),
+            value: U256::from(42),
+        }],
     )
     .expect("create");
     assert_eq!(ids(&mut s, "price > 0"), vec![0]);
@@ -492,7 +516,10 @@ fn range_historical_query() {
             b"".to_vec(),
             b"text/plain".to_vec(),
             vec![],
-            vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(100) }],
+            vec![NumericAnnotation {
+                key: b"price".to_vec(),
+                value: U256::from(100),
+            }],
         )
         .expect("create");
     }
@@ -507,7 +534,10 @@ fn range_historical_query() {
             b"".to_vec(),
             b"text/plain".to_vec(),
             vec![],
-            vec![NumericAnnotation { key: b"price".to_vec(), value: U256::from(200) }],
+            vec![NumericAnnotation {
+                key: b"price".to_vec(),
+                value: U256::from(200),
+            }],
         )
         .expect("update");
     }

@@ -101,9 +101,7 @@ pub fn init_tracing(path: &str) -> Result<FlushGuard> {
         .build();
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(
-            "arkiv_entitydb=debug,arkiv_node::evm=debug,arkiv_node::precompile=debug",
-        )
+        EnvFilter::new("arkiv_entitydb=debug,arkiv_node::evm=debug,arkiv_node::precompile=debug")
     });
     let subscriber = tracing_subscriber::registry()
         .with(chrome_layer)

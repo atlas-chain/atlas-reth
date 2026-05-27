@@ -101,7 +101,10 @@ pub struct CreateOp {
 
 impl CreateOp {
     pub fn new() -> Self {
-        Self { btl: 1_000, ..Self::default() }
+        Self {
+            btl: 1_000,
+            ..Self::default()
+        }
     }
     pub fn payload(mut self, p: impl Into<Vec<u8>>) -> Self {
         self.payload = p.into();
@@ -200,8 +203,7 @@ pub async fn boot() -> Result<impl impl_world_alias::ArkivWorld> {
 
     reth_tracing::init_test_tracing();
 
-    let mut genesis: Genesis =
-        serde_json::from_str(include_str!("../../chainspec/dev.base.json"))?;
+    let mut genesis: Genesis = serde_json::from_str(include_str!("../../chainspec/dev.base.json"))?;
     for (addr, account) in arkiv_genesis::genesis_alloc()? {
         genesis.alloc.insert(addr, account);
     }
@@ -219,7 +221,10 @@ pub async fn boot() -> Result<impl impl_world_alias::ArkivWorld> {
     let builder = NodeBuilder::new(node_config)
         .testing_node(runtime)
         .node(ArkivOpNode::default());
-    let NodeHandle { node, node_exit_future: _ } = install(builder).launch().await?;
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = install(builder).launch().await?;
 
     let node = NodeTestContext::new(node, payload_attrs_with_l1_info_deposit).await?;
 
@@ -280,8 +285,8 @@ where
     AddOns: RethRpcAddOns<
             Node,
             EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
-                + EthTransactions
-                + TraceExt,
+                        + EthTransactions
+                        + TraceExt,
         >,
 {
     fn address(&self, i: usize) -> Address {
@@ -347,12 +352,7 @@ where
         self.submit_op(signer_idx, abi_op, "EXTEND").await
     }
 
-    async fn transfer(
-        &mut self,
-        signer_idx: usize,
-        key: B256,
-        new_owner: Address,
-    ) -> Result<()> {
+    async fn transfer(&mut self, signer_idx: usize, key: B256, new_owner: Address) -> Result<()> {
         let abi_op = Operation {
             operationType: OP_TRANSFER,
             entityKey: key,
@@ -401,7 +401,9 @@ where
     }
 
     async fn query(&self, q: &str) -> Result<Vec<EntityData>> {
-        self.query_raw(q, serde_json::Value::Null).await.map(|r| r.data)
+        self.query_raw(q, serde_json::Value::Null)
+            .await
+            .map(|r| r.data)
     }
 
     async fn query_at(&self, q: &str, block: u64) -> Result<Vec<EntityData>> {
@@ -443,16 +445,11 @@ where
     AddOns: RethRpcAddOns<
             Node,
             EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
-                + EthTransactions
-                + TraceExt,
+                        + EthTransactions
+                        + TraceExt,
         >,
 {
-    async fn submit_op(
-        &mut self,
-        signer_idx: usize,
-        op: Operation,
-        op_label: &str,
-    ) -> Result<()> {
+    async fn submit_op(&mut self, signer_idx: usize, op: Operation, op_label: &str) -> Result<()> {
         let tx_hash = self.send_and_mine(signer_idx, op).await?;
         let receipt = self.fetch_receipt(tx_hash).await?;
         let status = receipt
@@ -502,9 +499,8 @@ where
         // Tx is mined synchronously inside `advance_block`, but the
         // receipt store occasionally lags a few ms behind. Brief poll.
         for _ in 0..20 {
-            let receipt: Option<serde_json::Value> = rpc
-                .request("eth_getTransactionReceipt", (tx_hash,))
-                .await?;
+            let receipt: Option<serde_json::Value> =
+                rpc.request("eth_getTransactionReceipt", (tx_hash,)).await?;
             if let Some(r) = receipt {
                 return Ok(r);
             }
@@ -518,7 +514,9 @@ where
             .node
             .rpc_client()
             .ok_or_else(|| eyre!("rpc client unavailable"))?;
-        Ok(rpc.request::<QueryResponse, _>("arkiv_query", (q, options)).await?)
+        Ok(rpc
+            .request::<QueryResponse, _>("arkiv_query", (q, options))
+            .await?)
     }
 }
 
@@ -529,9 +527,8 @@ fn build_attributes(
     numeric_attrs: &[(String, U256)],
     entity_key_attrs: &[(String, B256)],
 ) -> Vec<Attribute> {
-    let mut out = Vec::with_capacity(
-        string_attrs.len() + numeric_attrs.len() + entity_key_attrs.len(),
-    );
+    let mut out =
+        Vec::with_capacity(string_attrs.len() + numeric_attrs.len() + entity_key_attrs.len());
     for (k, v) in string_attrs {
         out.push(pack_string_attr(k, v));
     }

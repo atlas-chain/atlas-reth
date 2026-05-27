@@ -29,11 +29,7 @@ pub trait ArkivApi {
     /// remain, `cursor` in the response is the ID of the last entry —
     /// pass it back as `options.cursor` to fetch the next page.
     #[method(name = "query")]
-    async fn query(
-        &self,
-        q: String,
-        options: Option<QueryOptions>,
-    ) -> RpcResult<QueryResponse>;
+    async fn query(&self, q: String, options: Option<QueryOptions>) -> RpcResult<QueryResponse>;
 
     /// Number of live entities at the head (`$all` bitmap cardinality).
     #[method(name = "getEntityCount")]
@@ -115,9 +111,17 @@ pub struct EntityData {
     pub owner: Option<Address>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creator: Option<Address>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_u64_hex", deserialize_with = "de_u64_flexible")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_u64_hex",
+        deserialize_with = "de_u64_flexible"
+    )]
     pub created_at_block: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "ser_opt_u64_hex", deserialize_with = "de_u64_flexible")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_opt_u64_hex",
+        deserialize_with = "de_u64_flexible"
+    )]
     pub last_modified_at_block: Option<u64>,
     /// Always 0 — reth's revm context doesn't expose the
     /// tx-index-in-block during precompile execution. Kept in the wire
@@ -169,11 +173,7 @@ impl<P> ArkivApiServer for ArkivRpc<P>
 where
     P: StateProviderFactory + HeaderProvider + Clone + Send + Sync + 'static,
 {
-    async fn query(
-        &self,
-        q: String,
-        options: Option<QueryOptions>,
-    ) -> RpcResult<QueryResponse> {
+    async fn query(&self, q: String, options: Option<QueryOptions>) -> RpcResult<QueryResponse> {
         let provider = self.provider.clone();
         let options = options.unwrap_or_default();
         // MDBX state reads are sync I/O — keep them off the tokio runtime.
@@ -212,7 +212,11 @@ where
                     })?;
                 current_block_time.saturating_sub(parent.timestamp())
             };
-            Ok(BlockTiming { current_block, current_block_time, duration })
+            Ok(BlockTiming {
+                current_block,
+                current_block_time,
+                duration,
+            })
         })
         .await
         .map_err(|e| internal_err(format!("blocking task join: {e}")))?
@@ -235,11 +239,17 @@ fn run_query<P: StateProviderFactory>(
             .clamp(1, MAX_PAGE_SIZE),
         cursor: parse_cursor(options.cursor.as_deref())?,
     };
-    let Page { entries, next_cursor } = execute(&mut adapter, q, params)?;
+    let Page {
+        entries,
+        next_cursor,
+    } = execute(&mut adapter, q, params)?;
     let include = ResolvedIncludeData::from_options(options.include_data.as_ref());
 
     Ok(QueryResponse {
-        data: entries.into_iter().map(|e| entity_data_from(e, &include)).collect(),
+        data: entries
+            .into_iter()
+            .map(|e| entity_data_from(e, &include))
+            .collect(),
         block_number,
         cursor: next_cursor.map(|id| format!("0x{id:x}")),
     })
@@ -260,9 +270,9 @@ fn snapshot_for<P: StateProviderFactory>(
             let state = provider.history_by_block_number(n)?;
             Ok((state, n))
         }
-        Some(other) => eyre::bail!(
-            "atBlock tag {other:?} not supported; pass a hex block number or 'latest'"
-        ),
+        Some(other) => {
+            eyre::bail!("atBlock tag {other:?} not supported; pass a hex block number or 'latest'")
+        }
     }
 }
 
@@ -391,8 +401,10 @@ where
     match Either::deserialize(de)? {
         Either::Num(n) => Ok(n),
         Either::Hex(s) => {
-            let stripped =
-                s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(&s);
+            let stripped = s
+                .strip_prefix("0x")
+                .or_else(|| s.strip_prefix("0X"))
+                .unwrap_or(&s);
             u64::from_str_radix(stripped, 16)
                 .map_err(|e| D::Error::custom(format!("invalid hex u64 {s:?}: {e}")))
         }
@@ -446,4 +458,3 @@ fn parse_cursor(s: Option<&str>) -> Result<Option<u64>> {
 fn internal_err(msg: String) -> ErrorObjectOwned {
     ErrorObject::owned(INTERNAL_ERROR_CODE, msg, None::<()>)
 }
-

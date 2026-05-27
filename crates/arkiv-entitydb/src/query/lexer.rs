@@ -106,7 +106,9 @@ impl<'a> Lexer<'a> {
 
     fn next_token(&mut self) -> Result<Option<Token>> {
         self.skip_whitespace();
-        let Some(c) = self.peek_char() else { return Ok(None) };
+        let Some(c) = self.peek_char() else {
+            return Ok(None);
+        };
 
         // Single-char punctuation.
         match c {
@@ -194,11 +196,7 @@ impl<'a> Lexer<'a> {
             return self.lex_ident_or_keyword().map(Some);
         }
 
-        bail!(
-            "lex error at byte {}: unexpected char {:?}",
-            self.pos,
-            c
-        );
+        bail!("lex error at byte {}: unexpected char {:?}", self.pos, c);
     }
 
     fn expect_pair(&mut self, first: char, second: char) -> Result<()> {
@@ -272,9 +270,9 @@ impl<'a> Lexer<'a> {
                     b.copy_from_slice(&bytes);
                     Ok(Token::EntityKey(b))
                 }
-                n => bail!(
-                    "lex error at byte {start}: hex literal must be 40 or 64 chars, got {n}"
-                ),
+                n => {
+                    bail!("lex error at byte {start}: hex literal must be 40 or 64 chars, got {n}")
+                }
             }
         } else {
             while let Some(c) = self.peek_char() {
@@ -312,9 +310,7 @@ impl<'a> Lexer<'a> {
             "expiration" => Ok(Token::DollarExpiration),
             "contentType" => Ok(Token::DollarContentType),
             "createdAtBlock" => Ok(Token::DollarCreatedAtBlock),
-            other => bail!(
-                "lex error at byte {start}: unknown built-in `${other}`"
-            ),
+            other => bail!("lex error at byte {start}: unknown built-in `${other}`"),
         }
     }
 
@@ -422,12 +418,15 @@ mod tests {
 
     #[test]
     fn decimal_numbers() {
-        assert_eq!(lex("0 1 42 18446744073709551615"), vec![
-            Token::Number(0),
-            Token::Number(1),
-            Token::Number(42),
-            Token::Number(u64::MAX),
-        ]);
+        assert_eq!(
+            lex("0 1 42 18446744073709551615"),
+            vec![
+                Token::Number(0),
+                Token::Number(1),
+                Token::Number(42),
+                Token::Number(u64::MAX),
+            ]
+        );
     }
 
     #[test]
@@ -450,9 +449,7 @@ mod tests {
 
     #[test]
     fn entity_key_literal() {
-        let toks = lex(
-            "0x1111111111111111111111111111111111111111000000000000000000000000",
-        );
+        let toks = lex("0x1111111111111111111111111111111111111111000000000000000000000000");
         assert_eq!(toks.len(), 1);
         match &toks[0] {
             Token::EntityKey(b) => {
@@ -500,11 +497,14 @@ mod tests {
 
     #[test]
     fn identifiers() {
-        assert_eq!(lex("foo bar_baz x1"), vec![
-            Token::Ident("foo".into()),
-            Token::Ident("bar_baz".into()),
-            Token::Ident("x1".into()),
-        ]);
+        assert_eq!(
+            lex("foo bar_baz x1"),
+            vec![
+                Token::Ident("foo".into()),
+                Token::Ident("bar_baz".into()),
+                Token::Ident("x1".into()),
+            ]
+        );
     }
 
     #[test]
@@ -520,8 +520,8 @@ mod tests {
                 Token::DollarOwner,
                 Token::Eq,
                 Token::Address([
-                    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33,
-                    0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                    0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
                 ]),
                 Token::And,
                 Token::Ident("tag".into()),

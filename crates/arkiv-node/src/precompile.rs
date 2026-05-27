@@ -176,13 +176,18 @@ pub fn arkiv_precompile() -> DynPrecompile {
 
 fn dispatch_nonces(body: &[u8], input: &mut PrecompileInput<'_>) -> PrecompileResult {
     if G_NONCES > input.gas {
-        return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, input.reservoir));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::OutOfGas,
+            input.reservoir,
+        ));
     }
     let decoded = match noncesCall::abi_decode_raw(body) {
         Ok(d) => d,
         Err(e) => {
             return Ok(revert(
-                format!("arkiv precompile: invalid nonces calldata: {e}").into_bytes().into(),
+                format!("arkiv precompile: invalid nonces calldata: {e}")
+                    .into_bytes()
+                    .into(),
                 input.reservoir,
             ));
         }
@@ -208,7 +213,9 @@ fn dispatch_execute(body: &[u8], input: &mut PrecompileInput<'_>) -> PrecompileR
         Ok(d) => d.ops,
         Err(e) => {
             return Ok(revert(
-                format!("arkiv precompile: invalid execute calldata: {e}").into_bytes().into(),
+                format!("arkiv precompile: invalid execute calldata: {e}")
+                    .into_bytes()
+                    .into(),
                 input.reservoir,
             ));
         }
@@ -219,7 +226,10 @@ fn dispatch_execute(body: &[u8], input: &mut PrecompileInput<'_>) -> PrecompileR
 
     let gas_used = total_gas(&ops);
     if gas_used > input.gas {
-        return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, input.reservoir));
+        return Ok(PrecompileOutput::halt(
+            PrecompileHalt::OutOfGas,
+            input.reservoir,
+        ));
     }
 
     let current_block: u64 = input.internals.block_number().saturating_to();
@@ -247,7 +257,11 @@ fn dispatch_execute(body: &[u8], input: &mut PrecompileInput<'_>) -> PrecompileR
     }
     drop(dispatch_span);
 
-    Ok(PrecompileOutput::new(gas_used, Bytes::new(), input.reservoir))
+    Ok(PrecompileOutput::new(
+        gas_used,
+        Bytes::new(),
+        input.reservoir,
+    ))
 }
 
 // ─── Per-op application ──────────────────────────────────────────────
@@ -284,7 +298,9 @@ fn apply_op(
         OP_TRANSFER => apply_transfer(input, caller, current_block, op),
         OP_DELETE => apply_delete(input, caller, current_block, op),
         OP_EXPIRE => apply_expire(input, current_block, op),
-        t => Err(ApplyError::Revert(InvalidOpType { operationType: t }.abi_encode().into())),
+        t => Err(ApplyError::Revert(
+            InvalidOpType { operationType: t }.abi_encode().into(),
+        )),
     }
 }
 
@@ -345,7 +361,13 @@ fn apply_update(
             numerics,
         )?;
     }
-    emit_entity_op(input, op.entityKey, OP_UPDATE, entity.owner, entity.expires_at);
+    emit_entity_op(
+        input,
+        op.entityKey,
+        OP_UPDATE,
+        entity.owner,
+        entity.expires_at,
+    );
     Ok(())
 }
 
@@ -388,19 +410,33 @@ fn apply_transfer(
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
     if op.newOwner == Address::ZERO {
         return Err(ApplyError::Revert(
-            TransferToZeroAddress { entityKey: op.entityKey }.abi_encode().into(),
+            TransferToZeroAddress {
+                entityKey: op.entityKey,
+            }
+            .abi_encode()
+            .into(),
         ));
     }
     if op.newOwner == entity.owner {
         return Err(ApplyError::Revert(
-            TransferToSelf { entityKey: op.entityKey }.abi_encode().into(),
+            TransferToSelf {
+                entityKey: op.entityKey,
+            }
+            .abi_encode()
+            .into(),
         ));
     }
     {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::transfer(&mut adapter, op.entityKey, current_block, op.newOwner)?;
     }
-    emit_entity_op(input, op.entityKey, OP_TRANSFER, op.newOwner, entity.expires_at);
+    emit_entity_op(
+        input,
+        op.entityKey,
+        OP_TRANSFER,
+        op.newOwner,
+        entity.expires_at,
+    );
     Ok(())
 }
 
@@ -415,7 +451,13 @@ fn apply_delete(
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::delete(&mut adapter, op.entityKey)?;
     }
-    emit_entity_op(input, op.entityKey, OP_DELETE, entity.owner, entity.expires_at);
+    emit_entity_op(
+        input,
+        op.entityKey,
+        OP_DELETE,
+        entity.owner,
+        entity.expires_at,
+    );
     Ok(())
 }
 
@@ -427,8 +469,7 @@ fn apply_expire(
     // EXPIRE doesn't require ownership; only that the entity exists
     // and is past its expiry. `load_entity_for_owner(..., allow_expired=true)`
     // skips the expiry guard but still rejects missing entities.
-    let entity =
-        load_entity(input, op.entityKey)?.ok_or_else(|| not_found_revert(op.entityKey))?;
+    let entity = load_entity(input, op.entityKey)?.ok_or_else(|| not_found_revert(op.entityKey))?;
     if entity.expires_at > current_block {
         return Err(ApplyError::Revert(
             EntityNotExpired {
@@ -443,7 +484,13 @@ fn apply_expire(
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::expire(&mut adapter, op.entityKey)?;
     }
-    emit_entity_op(input, op.entityKey, OP_EXPIRE, entity.owner, entity.expires_at);
+    emit_entity_op(
+        input,
+        op.entityKey,
+        OP_EXPIRE,
+        entity.owner,
+        entity.expires_at,
+    );
     Ok(())
 }
 
@@ -558,7 +605,10 @@ fn load_entity(
     }
     let rlp = arkiv_entitydb::EntityRlp::decode_from_code(&code)
         .map_err(|e| ApplyError::Fatal(format!("decode entity {entity_addr}: {e}")))?;
-    Ok(Some(ExistingEntity { owner: rlp.owner, expires_at: rlp.expires_at }))
+    Ok(Some(ExistingEntity {
+        owner: rlp.owner,
+        expires_at: rlp.expires_at,
+    }))
 }
 
 /// Load an entity and assert: exists, not expired (unless
@@ -572,8 +622,7 @@ fn load_entity_for_owner(
     entity_key: B256,
     allow_expired: bool,
 ) -> Result<ExistingEntity, ApplyError> {
-    let entity = load_entity(input, entity_key)?
-        .ok_or_else(|| not_found_revert(entity_key))?;
+    let entity = load_entity(input, entity_key)?.ok_or_else(|| not_found_revert(entity_key))?;
     if !allow_expired && entity.expires_at <= current_block {
         return Err(ApplyError::Revert(
             EntityExpired {
@@ -586,26 +635,41 @@ fn load_entity_for_owner(
     }
     if entity.owner != caller {
         return Err(ApplyError::Revert(
-            NotOwner { entityKey: entity_key, caller, owner: entity.owner }
-                .abi_encode()
-                .into(),
+            NotOwner {
+                entityKey: entity_key,
+                caller,
+                owner: entity.owner,
+            }
+            .abi_encode()
+            .into(),
         ));
     }
     Ok(entity)
 }
 
 fn not_found_revert(entity_key: B256) -> ApplyError {
-    ApplyError::Revert(EntityNotFound { entityKey: entity_key }.abi_encode().into())
+    ApplyError::Revert(
+        EntityNotFound {
+            entityKey: entity_key,
+        }
+        .abi_encode()
+        .into(),
+    )
 }
 
 fn empty_calldata_revert() -> Bytes {
-    b"arkiv precompile: calldata too short for selector".to_vec().into()
+    b"arkiv precompile: calldata too short for selector"
+        .to_vec()
+        .into()
 }
 
 fn unknown_selector_revert(selector: [u8; 4]) -> Bytes {
-    format!("arkiv precompile: unknown selector 0x{}", alloy_primitives::hex::encode(selector))
-        .into_bytes()
-        .into()
+    format!(
+        "arkiv precompile: unknown selector 0x{}",
+        alloy_primitives::hex::encode(selector)
+    )
+    .into_bytes()
+    .into()
 }
 
 fn revert(data: Bytes, reservoir: u64) -> PrecompileOutput {
@@ -644,9 +708,10 @@ fn emit_entity_op(
         expiresAt: clip_u32(expires_at),
         entityHash: B256::ZERO,
     };
-    input
-        .internals
-        .log(Log { address: ARKIV_ADDRESS, data: event.encode_log_data() });
+    input.internals.log(Log {
+        address: ARKIV_ADDRESS,
+        data: event.encode_log_data(),
+    });
 }
 
 // ─── Gas accounting ──────────────────────────────────────────────────
@@ -803,7 +868,9 @@ mod tests {
             operationType: OP_CREATE,
             entityKey: B256::ZERO,
             payload: Bytes::from_static(&[1, 2, 3]),
-            contentType: Mime128 { data: [FixedBytes::ZERO; 4] },
+            contentType: Mime128 {
+                data: [FixedBytes::ZERO; 4],
+            },
             attributes: vec![],
             btl: 100,
             newOwner: Addr::ZERO,
@@ -819,7 +886,9 @@ mod tests {
 
     #[test]
     fn nonces_selector_round_trips() {
-        let call = noncesCall { owner: Addr::repeat_byte(0xaa) };
+        let call = noncesCall {
+            owner: Addr::repeat_byte(0xaa),
+        };
         let calldata = call.abi_encode();
         assert_eq!(&calldata[..4], &noncesCall::SELECTOR);
         let decoded = noncesCall::abi_decode_raw(&calldata[4..]).expect("decode");
@@ -842,7 +911,12 @@ mod tests {
         let mut w0 = [0u8; 32];
         w0[..10].copy_from_slice(b"text/plain");
         let m = Mime128 {
-            data: [FixedBytes::from(w0), FixedBytes::ZERO, FixedBytes::ZERO, FixedBytes::ZERO],
+            data: [
+                FixedBytes::from(w0),
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+            ],
         };
         assert_eq!(mime128_to_bytes(&m), b"text/plain".to_vec());
     }
@@ -952,7 +1026,9 @@ mod tests {
             operationType: op_type,
             entityKey: B256::ZERO,
             payload: Bytes::new(),
-            contentType: Mime128 { data: [FixedBytes::ZERO; 4] },
+            contentType: Mime128 {
+                data: [FixedBytes::ZERO; 4],
+            },
             attributes: vec![],
             btl: 0,
             newOwner: Addr::ZERO,

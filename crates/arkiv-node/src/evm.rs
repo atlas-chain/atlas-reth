@@ -52,8 +52,8 @@ use op_alloy_consensus::EIP1559ParamError;
 use reth_evm::{EvmEnvFor, ExecutionCtxFor};
 use reth_node_api::PayloadAttributesBuilder;
 use reth_node_builder::{
-    BuilderContext, ConfigureEngineEvm, ConfigureEvm, DebugNode, FullNodeComponents,
-    FullNodeTypes, Node, NodeAdapter, NodeComponentsBuilder, NodeTypes,
+    BuilderContext, ConfigureEngineEvm, ConfigureEvm, DebugNode, FullNodeComponents, FullNodeTypes,
+    Node, NodeAdapter, NodeComponentsBuilder, NodeTypes,
     components::{BasicPayloadServiceBuilder, ComponentsBuilder, ExecutorBuilder},
     rpc::BasicEngineValidatorBuilder,
 };
@@ -111,8 +111,7 @@ impl EvmFactory for ArkivOpEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = ArkivOpEvm<DB, I>;
     type Context<DB: Database> = OpEvmContext<DB>;
     type Tx = OpTx;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> =
-        EVMError<DBError, OpTxError>;
+    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError, OpTxError>;
     type HaltReason = OpHaltReason;
     type Spec = OpSpecId;
     type BlockEnv = BlockEnv;
@@ -264,7 +263,10 @@ impl ArkivOpEvmConfig {
             _pd: core::marker::PhantomData,
         };
         let inner_default = OpEvmConfig::new(chain_spec, OpRethReceiptBuilder::default());
-        Self { inner, inner_default }
+        Self {
+            inner,
+            inner_default,
+        }
     }
 }
 
@@ -444,7 +446,9 @@ where
         chain_spec: &Self::ChainSpec,
     ) -> impl PayloadAttributesBuilder<<Self::Payload as reth_node_api::PayloadTypes>::PayloadAttributes>
     {
-        ArkivLocalPayloadAttributesBuilder { chain_spec: Arc::new(chain_spec.clone()) }
+        ArkivLocalPayloadAttributesBuilder {
+            chain_spec: Arc::new(chain_spec.clone()),
+        }
     }
 }
 

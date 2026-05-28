@@ -43,9 +43,15 @@ env:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install mold linker
         run: |
@@ -72,10 +78,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "ci-full-checks"
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
 
       - name: Set up just
         uses: extractions/setup-just@v4
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Check formatting
         run: cargo fmt --all --check

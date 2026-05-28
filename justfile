@@ -33,11 +33,11 @@ fmt:
 
 # unit tests across workspace
 unit-tests:
-    cargo test --workspace --lib
+    cargo nextest run --workspace --lib
 
 # e2e tests doing series of operations on locally started node (it is actually kind of component test)
 e2e-tests:
-    cargo test -p arkiv-e2e
+    cargo nextest run -p arkiv-e2e
 
 # ── Node ─────────────────────────────────────────────────────
 

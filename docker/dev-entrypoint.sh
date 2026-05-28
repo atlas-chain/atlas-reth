@@ -47,5 +47,7 @@ else
         --ws.api eth,net,web3,debug \
         --ws.origins '*' \
         --dev.block-time 2s \
+        --txpool.minimal-protocol-fee 1 \
+        --txpool.minimum-priority-fee 0 \
         --dev
 fi

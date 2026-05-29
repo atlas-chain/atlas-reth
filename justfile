@@ -203,3 +203,25 @@ block-number:
 # fail until Phase 4 reintroduces a local-backed handler.
 block-timing:
     {{ arkiv_cli }} block-timing
+
+# ── Acceptance harness (ThirdParty/optimism, pinned to op-reth/v2.2.5) ──
+#
+# The OP Go acceptance-test harness (op-acceptance-tests + the in-process
+# op-devstack/sysgo) lives in the Optimism monorepo, vendored as a submodule.
+# op-acceptance-tests is part of the monorepo's single Go module and imports
+# across ~15 of its packages, so it can only be compiled with the whole tree
+# checked out — not in isolation.
+#
+# Compiling needs only Go — any host Go >= 1.24 (the go.mod floor). No mise.
+# Actually *running* the suite needs the full runtime build-deps (contracts,
+# cannon prestates, Rust binaries) via the monorepo's own mise-managed tooling —
+# see ThirdParty/optimism/docs/ai/acceptance-tests.md.
+
+# Fetch/checkout the OP monorepo submodule at the pinned commit
+harness-init:
+    git submodule update --init ThirdParty/optimism
+
+# Confirm the Go acceptance harness compiles at the matching tag (compiles every
+# test package + its cross-repo import closure, runs no tests).
+harness-check:
+    cd ThirdParty/optimism && go test -run 'a^' ./op-acceptance-tests/...

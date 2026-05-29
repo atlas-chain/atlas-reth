@@ -10,7 +10,7 @@ use alloy_primitives::{Address, B256, U256};
 use arkiv_entitydb::query::parse;
 use arkiv_entitydb::test_utils::{InMemoryStateAdapter, InMemoryStateDb};
 use arkiv_entitydb::{
-    NumericAnnotation, StringAnnotation, create, delete, resolve_id, transfer, update,
+    ATTR_STRING, ATTR_UINT, Attribute, create, delete, resolve_id, transfer, update,
 };
 
 fn alice() -> Address {
@@ -56,7 +56,6 @@ fn create_simple(
         10,
         b"payload".to_vec(),
         content_type.to_vec(),
-        vec![],
         vec![],
     )
     .expect("create");
@@ -113,11 +112,11 @@ fn equality_user_string_annotation() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![StringAnnotation {
+        vec![Attribute {
             key: b"tag".to_vec(),
+            value_type: ATTR_STRING,
             value: b"music".to_vec(),
         }],
-        vec![],
     )
     .expect("create");
     create(
@@ -128,11 +127,11 @@ fn equality_user_string_annotation() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![StringAnnotation {
+        vec![Attribute {
             key: b"tag".to_vec(),
+            value_type: ATTR_STRING,
             value: b"video".to_vec(),
         }],
-        vec![],
     )
     .expect("create");
     assert_eq!(ids(&mut s, r#"tag = "music""#), vec![0]);
@@ -150,10 +149,10 @@ fn equality_user_numeric_annotation() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"score".to_vec(),
-            value: U256::from(42),
+            value_type: ATTR_UINT,
+            value: U256::from(42).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -165,10 +164,10 @@ fn equality_user_numeric_annotation() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"score".to_vec(),
-            value: U256::from(7),
+            value_type: ATTR_UINT,
+            value: U256::from(7).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -319,10 +318,10 @@ fn create_with_price(state: &mut InMemoryStateAdapter, owner: Address, key: B256
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(price),
+            value_type: ATTR_UINT,
+            value: U256::from(price).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -373,10 +372,10 @@ fn range_and_equality_combined() {
         10,
         b"".to_vec(),
         b"image/png".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(20),
+            value_type: ATTR_UINT,
+            value: U256::from(20).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -389,10 +388,10 @@ fn range_and_equality_combined() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(20),
+            value_type: ATTR_UINT,
+            value: U256::from(20).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -405,10 +404,10 @@ fn range_and_equality_combined() {
         10,
         b"".to_vec(),
         b"image/png".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(5),
+            value_type: ATTR_UINT,
+            value: U256::from(5).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -450,10 +449,10 @@ fn update_moves_index_value() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(100),
+            value_type: ATTR_UINT,
+            value: U256::from(100).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -463,10 +462,10 @@ fn update_moves_index_value() {
         20,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(200),
+            value_type: ATTR_UINT,
+            value: U256::from(200).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("update");
@@ -486,10 +485,10 @@ fn delete_removes_index_entry() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(42),
+            value_type: ATTR_UINT,
+            value: U256::from(42).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -515,10 +514,10 @@ fn range_historical_query() {
             1,
             b"".to_vec(),
             b"text/plain".to_vec(),
-            vec![],
-            vec![NumericAnnotation {
+            vec![Attribute {
                 key: b"price".to_vec(),
-                value: U256::from(100),
+                value_type: ATTR_UINT,
+                value: U256::from(100).to_be_bytes::<32>().to_vec(),
             }],
         )
         .expect("create");
@@ -533,10 +532,10 @@ fn range_historical_query() {
             2,
             b"".to_vec(),
             b"text/plain".to_vec(),
-            vec![],
-            vec![NumericAnnotation {
+            vec![Attribute {
                 key: b"price".to_vec(),
-                value: U256::from(200),
+                value_type: ATTR_UINT,
+                value: U256::from(200).to_be_bytes::<32>().to_vec(),
             }],
         )
         .expect("update");

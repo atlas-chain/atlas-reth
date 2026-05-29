@@ -29,7 +29,10 @@
 use alloy_evm::precompiles::{DynPrecompile, PrecompileInput};
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, Log, U256, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolEvent, sol};
-use arkiv_entitydb::{ARKIV_ADDRESS, NumericAnnotation, StateAdapter, StringAnnotation};
+use arkiv_entitydb::{
+    ARKIV_ADDRESS, ATTR_ENTITY_KEY, ATTR_STRING, ATTR_UINT, Attribute as EntityAttribute,
+    StateAdapter,
+};
 use revm::precompile::{
     PrecompileError, PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult,
 };
@@ -98,18 +101,15 @@ sol! {
     error EntityNotExpired(bytes32 entityKey, uint32 expiresAt);
 }
 
-// Op-type + attribute valueType tags. Must match `Entity.{CREATE..EXPIRE}`
-// and `Entity.ATTR_{UINT,STRING,ENTITY_KEY}` in EntityRegistry.sol.
+// Op-type tags. Must match `Entity.{CREATE..EXPIRE}` in
+// EntityRegistry.sol. Attribute `valueType` tags (`ATTR_*`) live in
+// `arkiv_entitydb` since they're part of the on-disk shape.
 const OP_CREATE: u8 = 1;
 const OP_UPDATE: u8 = 2;
 const OP_EXTEND: u8 = 3;
 const OP_TRANSFER: u8 = 4;
 const OP_DELETE: u8 = 5;
 const OP_EXPIRE: u8 = 6;
-
-const ATTR_UINT: u8 = 1;
-const ATTR_STRING: u8 = 2;
-const ATTR_ENTITY_KEY: u8 = 3;
 
 // ─── Gas model ────────────────────────────────────────────────────────
 //
@@ -317,7 +317,7 @@ fn apply_create(
     validate_attribute_names(&op.attributes)?;
 
     let expires_at = current_block.saturating_add(op.btl as u64);
-    let (strings, numerics) = convert_attributes(&op.attributes)?;
+    let attributes = convert_attributes(&op.attributes)?;
     let entity_key = {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         let current_nonce = arkiv_entitydb::bump_nonce(&mut adapter, caller)
@@ -331,8 +331,7 @@ fn apply_create(
             current_block,
             op.payload.to_vec(),
             mime128_to_bytes(&op.contentType),
-            strings,
-            numerics,
+            attributes,
         )?;
         entity_key
     };
@@ -348,7 +347,7 @@ fn apply_update(
 ) -> Result<(), ApplyError> {
     validate_attribute_names(&op.attributes)?;
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
-    let (strings, numerics) = convert_attributes(&op.attributes)?;
+    let attributes = convert_attributes(&op.attributes)?;
     {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::update(
@@ -357,8 +356,7 @@ fn apply_update(
             current_block,
             op.payload.to_vec(),
             mime128_to_bytes(&op.contentType),
-            strings,
-            numerics,
+            attributes,
         )?;
     }
     emit_entity_op(
@@ -783,44 +781,33 @@ fn ident32_to_bytes(name: B256) -> Vec<u8> {
     strip_trailing_zeros(name.0.to_vec())
 }
 
-fn convert_attributes(
-    attrs: &[Attribute],
-) -> Result<(Vec<StringAnnotation>, Vec<NumericAnnotation>), ApplyError> {
-    let mut strings = Vec::new();
-    let mut numerics = Vec::new();
-    for a in attrs {
-        let key = ident32_to_bytes(a.name);
-        match a.valueType {
-            ATTR_UINT => {
+fn convert_attributes(attrs: &[Attribute]) -> Result<Vec<EntityAttribute>, ApplyError> {
+    attrs
+        .iter()
+        .map(|a| {
+            let key = ident32_to_bytes(a.name);
+            let value = match a.valueType {
                 // SDK packs the uint256 left-aligned into value[0]; the
-                // remaining three words are zero.
-                numerics.push(NumericAnnotation {
-                    key,
-                    value: U256::from_be_slice(a.value[0].as_slice()),
-                });
-            }
-            ATTR_STRING => {
-                strings.push(StringAnnotation {
-                    key,
-                    value: pack_bytes32_4(&a.value),
-                });
-            }
-            ATTR_ENTITY_KEY => {
+                // remaining three words are zero. Store the 32 raw
+                // big-endian bytes verbatim.
+                ATTR_UINT => a.value[0].as_slice().to_vec(),
+                ATTR_STRING => pack_bytes32_4(&a.value),
                 // 32 raw bytes — no trailing-zero strip (a real key may
                 // end in zeros).
-                strings.push(StringAnnotation {
-                    key,
-                    value: a.value[0].as_slice().to_vec(),
-                });
-            }
-            t => {
-                return Err(ApplyError::Fatal(format!(
-                    "unknown attribute valueType {t}"
-                )));
-            }
-        }
-    }
-    Ok((strings, numerics))
+                ATTR_ENTITY_KEY => a.value[0].as_slice().to_vec(),
+                t => {
+                    return Err(ApplyError::Fatal(format!(
+                        "unknown attribute valueType {t}"
+                    )));
+                }
+            };
+            Ok(EntityAttribute {
+                key,
+                value_type: a.valueType,
+                value,
+            })
+        })
+        .collect()
 }
 
 /// `u64` block-number to `uint32` for event/error fields. Block numbers
@@ -1013,11 +1000,76 @@ mod tests {
                 FixedBytes::ZERO,
             ],
         }];
-        let (strings, numerics) = convert_attributes(&attrs).expect("convert");
-        assert!(strings.is_empty());
-        assert_eq!(numerics.len(), 1);
-        assert_eq!(numerics[0].key, b"score".to_vec());
-        assert_eq!(numerics[0].value, U256::from(42));
+        let out = convert_attributes(&attrs).expect("convert");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].key, b"score".to_vec());
+        assert_eq!(out[0].value_type, ATTR_UINT);
+        assert_eq!(out[0].value, U256::from(42).to_be_bytes::<32>().to_vec());
+    }
+
+    #[test]
+    fn convert_string_attribute_packs_and_strips_trailing_zeros() {
+        // "hello" left-aligned into value[0]; rest of value[0] and
+        // value[1..4] are zero. pack_bytes32_4 then strips trailing
+        // zeros to recover the original 5 bytes.
+        let mut w0 = [0u8; 32];
+        w0[..5].copy_from_slice(b"hello");
+        let attrs = vec![Attribute {
+            name: ident_b256(b"greeting"),
+            valueType: ATTR_STRING,
+            value: [
+                FixedBytes::from(w0),
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+            ],
+        }];
+        let out = convert_attributes(&attrs).expect("convert");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].key, b"greeting".to_vec());
+        assert_eq!(out[0].value_type, ATTR_STRING);
+        assert_eq!(out[0].value, b"hello".to_vec());
+    }
+
+    #[test]
+    fn convert_entity_key_attribute_preserves_32_raw_bytes() {
+        // Use a key whose last byte is non-zero followed by trailing
+        // zeros — must NOT be stripped (real entity keys can end in
+        // any byte sequence including zeros).
+        let mut key_bytes = [0u8; 32];
+        key_bytes[0] = 0xab;
+        key_bytes[1] = 0xcd;
+        // Rest stays zero — proves we don't strip trailing zeros.
+        let attrs = vec![Attribute {
+            name: ident_b256(b"linkedTo"),
+            valueType: ATTR_ENTITY_KEY,
+            value: [
+                FixedBytes::from(key_bytes),
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+            ],
+        }];
+        let out = convert_attributes(&attrs).expect("convert");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].key, b"linkedTo".to_vec());
+        assert_eq!(out[0].value_type, ATTR_ENTITY_KEY);
+        assert_eq!(out[0].value, key_bytes.to_vec());
+        assert_eq!(out[0].value.len(), 32);
+    }
+
+    #[test]
+    fn convert_attributes_rejects_unknown_value_type() {
+        let attrs = vec![Attribute {
+            name: ident_b256(b"weird"),
+            valueType: 99,
+            value: [FixedBytes::ZERO; 4],
+        }];
+        let err = convert_attributes(&attrs).expect_err("should reject");
+        match err {
+            ApplyError::Fatal(msg) => assert!(msg.contains("99"), "msg was {msg:?}"),
+            other => panic!("expected Fatal, got {other:?}"),
+        }
     }
 
     #[test]

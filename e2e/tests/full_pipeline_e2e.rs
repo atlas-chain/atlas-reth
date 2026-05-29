@@ -26,7 +26,10 @@
 //! pure narrative + assertions.
 
 use alloy_primitives::{Address, B256};
-use arkiv_e2e::{CreateOp, OP_UPDATE, Operation, UpdateOp, WorldOps, boot};
+use arkiv_e2e::{
+    ATTR_ENTITY_KEY, ATTR_STRING, ATTR_UINT, CreateOp, OP_UPDATE, Operation, UpdateOp, WorldOps,
+    boot,
+};
 use arkiv_node::rpc::EntityData;
 
 /// Hex-encode without `0x` prefix — matches the wire format the SDK
@@ -144,6 +147,53 @@ async fn full_pipeline() -> eyre::Result<()> {
     let score_42 = world.query("score = 42").await?;
     assert_eq!(score_42.len(), 1);
     assert_eq!(score_42[0].key, alice_key);
+
+    // Attribute wire-shape round-trip — discriminator survives through
+    // storage + RPC, and per-type serialization matches the SDK contract
+    // (UINT → decimal string, STRING → UTF-8, ENTITY_KEY → `0x` + 64
+    // hex chars).
+    let carol_entity = music
+        .iter()
+        .find(|e| e.key == carol_key)
+        .expect("carol in tag=music results");
+    assert_eq!(carol_entity.attributes.len(), 2);
+
+    let tag_attr = carol_entity
+        .attributes
+        .iter()
+        .find(|a| a.key == "tag")
+        .expect("tag attr on carol");
+    assert_eq!(tag_attr.value_type, ATTR_STRING);
+    assert_eq!(tag_attr.value, "music");
+
+    let ref_attr = carol_entity
+        .attributes
+        .iter()
+        .find(|a| a.key == "ref")
+        .expect("ref attr on carol");
+    assert_eq!(ref_attr.value_type, ATTR_ENTITY_KEY);
+    assert_eq!(ref_attr.value, format!("0x{}", hex_key(alice_key)));
+
+    // Query by a user-defined ENTITY_KEY attribute as a predicate (not
+    // just the built-in `$key`): carol is the only entity whose `ref`
+    // points at alice.
+    let by_ref = world
+        .query(&format!("ref = 0x{}", hex_key(alice_key)))
+        .await?;
+    assert_eq!(by_ref.len(), 1);
+    assert_eq!(by_ref[0].key, carol_key);
+
+    let alice_entity = music
+        .iter()
+        .find(|e| e.key == alice_key)
+        .expect("alice in tag=music results");
+    let score_attr = alice_entity
+        .attributes
+        .iter()
+        .find(|a| a.key == "score")
+        .expect("score attr on alice");
+    assert_eq!(score_attr.value_type, ATTR_UINT);
+    assert_eq!(score_attr.value, "42");
 
     // ── 4. Boolean combinators ──────────────────────────────────────
 

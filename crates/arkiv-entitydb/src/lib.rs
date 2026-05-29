@@ -35,7 +35,7 @@
 //!   encode/decode, tombstoning) lives here. The precompile is a thin
 //!   adapter: decode calldata, dispatch.
 
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, keccak256};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use eyre::{Result, ensure};
 use roaring::RoaringTreemap;
@@ -254,11 +254,6 @@ fn encode_b256(b: B256) -> Vec<u8> {
     b.0.to_vec()
 }
 
-#[inline]
-fn encode_u256_be(n: U256) -> Vec<u8> {
-    n.to_be_bytes::<32>().to_vec()
-}
-
 // ─── Bitmap (roaring64) ───────────────────────────────────────────────
 
 /// Roaring64 bitmap of entity IDs.
@@ -353,6 +348,13 @@ pub use index_tree::IndexTree;
 /// address halts immediately.
 pub const ENTITY_CODE_PREFIX: u8 = 0xFE;
 
+/// Attribute `value_type` tags. Must match
+/// `Entity.ATTR_{UINT,STRING,ENTITY_KEY}` in EntityRegistry.sol and
+/// the ABI shape decoded by the precompile.
+pub const ATTR_UINT: u8 = 1;
+pub const ATTR_STRING: u8 = 2;
+pub const ATTR_ENTITY_KEY: u8 = 3;
+
 /// On-trie representation of an entity. Encoded as
 /// `0xFE || RLP(EntityRlp)` and stored as the entity-account `code`.
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -364,28 +366,23 @@ pub struct EntityRlp {
     pub expires_at: u64,
     pub content_type: Vec<u8>,
     pub key: B256,
-    pub string_annotations: Vec<StringAnnotation>,
-    pub numeric_annotations: Vec<NumericAnnotation>,
+    pub attributes: Vec<Attribute>,
     /// Block number of the most recent mutation (CREATE / UPDATE /
     /// EXTEND / TRANSFER) — equals `created_at_block` until the
     /// entity is first modified.
     pub last_modified_at_block: u64,
 }
 
-/// `(key, value)` pair where `value` is opaque bytes — used for the
-/// SDK `STRING` and `ENTITY_KEY` annotation types.
+/// Discriminated `(key, value)` attribute mirroring the precompile
+/// ABI. `value_type` selects how `value` should be interpreted:
+/// `ATTR_UINT` → 32-byte big-endian uint256; `ATTR_STRING` → opaque
+/// bytes (UTF-8 by SDK convention); `ATTR_ENTITY_KEY` → 32 raw
+/// bytes of an entity key.
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct StringAnnotation {
+pub struct Attribute {
     pub key: Vec<u8>,
+    pub value_type: u8,
     pub value: Vec<u8>,
-}
-
-/// `(key, value)` pair where `value` is a `uint256` — used for the
-/// SDK `UINT` annotation type.
-#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct NumericAnnotation {
-    pub key: Vec<u8>,
-    pub value: U256,
 }
 
 impl EntityRlp {
@@ -456,7 +453,7 @@ pub trait StateAdapter {
     skip_all,
     fields(
         payload_bytes = payload.len(),
-        n_attrs = string_annotations.len() + numeric_annotations.len(),
+        n_attrs = attributes.len(),
     ),
 )]
 pub fn create<S: StateAdapter>(
@@ -467,8 +464,7 @@ pub fn create<S: StateAdapter>(
     current_block: u64,
     payload: Vec<u8>,
     content_type: Vec<u8>,
-    string_annotations: Vec<StringAnnotation>,
-    numeric_annotations: Vec<NumericAnnotation>,
+    attributes: Vec<Attribute>,
 ) -> Result<()> {
     // 1) Allocate entity_id.
     let count_slot = slot_entity_count();
@@ -503,7 +499,7 @@ pub fn create<S: StateAdapter>(
         &content_type,
     )
     .into_iter()
-    .chain(user_pairs(&string_annotations, &numeric_annotations))
+    .chain(user_pairs(&attributes))
     {
         insert_into_pair_bitmap(state, &k, &v, entity_id)?;
     }
@@ -517,8 +513,7 @@ pub fn create<S: StateAdapter>(
         expires_at,
         content_type,
         key: entity_key,
-        string_annotations,
-        numeric_annotations,
+        attributes,
         last_modified_at_block: current_block,
     };
     state.set_code(&entity_addr, entity.encode_as_code())?;
@@ -537,7 +532,7 @@ pub fn create<S: StateAdapter>(
     skip_all,
     fields(
         payload_bytes = payload.len(),
-        n_attrs = string_annotations.len() + numeric_annotations.len(),
+        n_attrs = attributes.len(),
     ),
 )]
 pub fn update<S: StateAdapter>(
@@ -546,8 +541,7 @@ pub fn update<S: StateAdapter>(
     current_block: u64,
     payload: Vec<u8>,
     content_type: Vec<u8>,
-    string_annotations: Vec<StringAnnotation>,
-    numeric_annotations: Vec<NumericAnnotation>,
+    attributes: Vec<Attribute>,
 ) -> Result<()> {
     let entity_addr = entity_address(entity_key);
     let entity_id = read_entity_id(state, entity_addr)?;
@@ -558,18 +552,13 @@ pub fn update<S: StateAdapter>(
     // `$all`) aren't included on either side, so the diff doesn't
     // touch them. `$contentType` IS in the diff so it moves if the
     // content type changed.
-    let old_pairs = updatable_pairs(
-        &entity.content_type,
-        &entity.string_annotations,
-        &entity.numeric_annotations,
-    );
-    let new_pairs = updatable_pairs(&content_type, &string_annotations, &numeric_annotations);
+    let old_pairs = updatable_pairs(&entity.content_type, &entity.attributes);
+    let new_pairs = updatable_pairs(&content_type, &attributes);
     apply_pair_diff(state, &old_pairs, &new_pairs, entity_id)?;
 
     entity.payload = payload;
     entity.content_type = content_type;
-    entity.string_annotations = string_annotations;
-    entity.numeric_annotations = numeric_annotations;
+    entity.attributes = attributes;
     entity.last_modified_at_block = current_block;
     state.set_code(&entity_addr, entity.encode_as_code())?;
 
@@ -650,10 +639,8 @@ pub fn delete<S: StateAdapter>(state: &mut S, entity_key: B256) -> Result<()> {
         &entity.content_type,
     )
     .into_iter()
-    .chain(user_pairs(
-        &entity.string_annotations,
-        &entity.numeric_annotations,
-    )) {
+    .chain(user_pairs(&entity.attributes))
+    {
         remove_from_pair_bitmap(state, &k, &v, entity_id)?;
     }
 
@@ -721,33 +708,27 @@ fn built_in_pairs(
     ]
 }
 
-/// User-supplied annotations flattened to `(key, value)` byte pairs.
+/// User-supplied attributes flattened to `(key, value)` byte pairs.
+/// The value bytes are stored verbatim — the precompile is responsible
+/// for producing the canonical byte form per `value_type` (32-byte BE
+/// for `ATTR_UINT`, packed bytes for `ATTR_STRING`, 32 raw bytes for
+/// `ATTR_ENTITY_KEY`).
 fn user_pairs<'a>(
-    string_annotations: &'a [StringAnnotation],
-    numeric_annotations: &'a [NumericAnnotation],
+    attributes: &'a [Attribute],
 ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a {
-    string_annotations
+    attributes
         .iter()
-        .map(|sa| (sa.key.clone(), sa.value.clone()))
-        .chain(
-            numeric_annotations
-                .iter()
-                .map(|na| (na.key.clone(), encode_u256_be(na.value))),
-        )
+        .map(|a| (a.key.clone(), a.value.clone()))
 }
 
-/// Pairs that an UPDATE op diffs: the user annotations plus
+/// Pairs that an UPDATE op diffs: the user attributes plus
 /// `$contentType`. Other built-ins (`$creator` / `$key` /
 /// `$createdAtBlock` / `$owner` / `$expiration` / `$all`) don't change
 /// on UPDATE and so aren't in the diff set.
-fn updatable_pairs(
-    content_type: &[u8],
-    string_annotations: &[StringAnnotation],
-    numeric_annotations: &[NumericAnnotation],
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut out = Vec::with_capacity(1 + string_annotations.len() + numeric_annotations.len());
+fn updatable_pairs(content_type: &[u8], attributes: &[Attribute]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut out = Vec::with_capacity(1 + attributes.len());
     out.push((ANNOT_CONTENT_TYPE.to_vec(), content_type.to_vec()));
-    out.extend(user_pairs(string_annotations, numeric_annotations));
+    out.extend(user_pairs(attributes));
     out
 }
 
@@ -981,6 +962,7 @@ pub mod test_utils {
 mod tests {
     use super::*;
     use crate::test_utils::{InMemoryStateAdapter, InMemoryStateDb};
+    use alloy_primitives::U256;
     use alloy_primitives::b256;
 
     // ─── Primitives ──────────────────────────────────────────────────
@@ -1021,14 +1003,23 @@ mod tests {
             expires_at: 99_999,
             content_type: b"application/json".to_vec(),
             key: b256!("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
-            string_annotations: vec![StringAnnotation {
-                key: b"title".to_vec(),
-                value: b"the answer".to_vec(),
-            }],
-            numeric_annotations: vec![NumericAnnotation {
-                key: b"priority".to_vec(),
-                value: U256::from(42),
-            }],
+            attributes: vec![
+                Attribute {
+                    key: b"title".to_vec(),
+                    value_type: ATTR_STRING,
+                    value: b"the answer".to_vec(),
+                },
+                Attribute {
+                    key: b"priority".to_vec(),
+                    value_type: ATTR_UINT,
+                    value: U256::from(42).to_be_bytes::<32>().to_vec(),
+                },
+                Attribute {
+                    key: b"replyTo".to_vec(),
+                    value_type: ATTR_ENTITY_KEY,
+                    value: vec![0xab; 32],
+                },
+            ],
             last_modified_at_block: 1234,
         };
         let code = original.encode_as_code();
@@ -1049,8 +1040,7 @@ mod tests {
             expires_at: 0,
             content_type: vec![],
             key: B256::ZERO,
-            string_annotations: vec![],
-            numeric_annotations: vec![],
+            attributes: vec![],
             last_modified_at_block: 0,
         };
         let mut bad = entity.encode_as_code();
@@ -1102,14 +1092,18 @@ mod tests {
                 10,
                 b"hello".to_vec(),
                 b"text/plain".to_vec(),
-                vec![StringAnnotation {
-                    key: b"tag".to_vec(),
-                    value: b"music".to_vec(),
-                }],
-                vec![NumericAnnotation {
-                    key: b"score".to_vec(),
-                    value: U256::from(7),
-                }],
+                vec![
+                    Attribute {
+                        key: b"tag".to_vec(),
+                        value_type: ATTR_STRING,
+                        value: b"music".to_vec(),
+                    },
+                    Attribute {
+                        key: b"score".to_vec(),
+                        value_type: ATTR_UINT,
+                        value: U256::from(7).to_be_bytes::<32>().to_vec(),
+                    },
+                ],
             )
             .expect("create");
         }
@@ -1157,7 +1151,6 @@ mod tests {
                 vec![],
                 vec![],
                 vec![],
-                vec![],
             )
             .unwrap();
             transfer(&mut state, key, 20, bob()).unwrap();
@@ -1183,7 +1176,6 @@ mod tests {
                 key,
                 100,
                 10,
-                vec![],
                 vec![],
                 vec![],
                 vec![],
@@ -1213,11 +1205,11 @@ mod tests {
                 10,
                 vec![],
                 b"text/plain".to_vec(),
-                vec![StringAnnotation {
+                vec![Attribute {
                     key: b"tag".to_vec(),
+                    value_type: ATTR_STRING,
                     value: b"a".to_vec(),
                 }],
-                vec![],
             )
             .unwrap();
             // Change the tag value; keep content type the same.
@@ -1227,11 +1219,11 @@ mod tests {
                 20,
                 vec![0xff],
                 b"text/plain".to_vec(),
-                vec![StringAnnotation {
+                vec![Attribute {
                     key: b"tag".to_vec(),
+                    value_type: ATTR_STRING,
                     value: b"b".to_vec(),
                 }],
-                vec![],
             )
             .unwrap();
         }
@@ -1259,7 +1251,6 @@ mod tests {
                 10,
                 vec![],
                 b"text/plain".to_vec(),
-                vec![],
                 vec![],
             )
             .unwrap();
@@ -1419,7 +1410,6 @@ mod tests {
                 10,
                 vec![],
                 b"text/plain".to_vec(),
-                vec![],
                 vec![],
             )
             .unwrap();

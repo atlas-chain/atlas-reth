@@ -99,6 +99,8 @@ sol! {
     error TransferToZeroAddress(bytes32 entityKey);
     error TransferToSelf(bytes32 entityKey);
     error EntityNotExpired(bytes32 entityKey, uint32 expiresAt);
+    error AttributeValueMalformed(bytes32 name, uint8 valueType, uint256 wordIndex);
+    error AttributeStringInvalidByte(bytes32 name, uint256 position, bytes1 value);
 }
 
 // Op-type tags. Must match `Entity.{CREATE..EXPIRE}` in
@@ -529,50 +531,27 @@ const IDENT_LEADING: u128 = {
 
 fn validate_ident32(raw: B256) -> Result<(), ApplyError> {
     let bytes = raw.0;
-    let b0 = bytes[0];
-    if b0 == 0 {
+    if bytes[0] == 0 {
         return Err(ApplyError::Revert(Ident32Empty {}.abi_encode().into()));
     }
-    if (b0 as u128) > 127 || (IDENT_LEADING >> b0) & 1 == 0 {
-        return Err(ApplyError::Revert(
-            Ident32InvalidByte {
-                position: U256::ZERO,
-                value: FixedBytes::<1>::from([b0]),
-            }
-            .abi_encode()
-            .into(),
-        ));
-    }
-    let mut j = 1;
-    while j < 32 {
-        let b = bytes[j];
+    let mut seen_zero = false;
+    for (position, &b) in bytes.iter().enumerate() {
         if b == 0 {
-            // Remaining bytes must all be zero (no embedded nulls).
-            for k in (j + 1)..32 {
-                if bytes[k] != 0 {
-                    return Err(ApplyError::Revert(
-                        Ident32InvalidByte {
-                            position: U256::from(k),
-                            value: FixedBytes::<1>::from([bytes[k]]),
-                        }
-                        .abi_encode()
-                        .into(),
-                    ));
-                }
+            seen_zero = true;
+        } else {
+            let charset = if position == 0 { IDENT_LEADING } else { IDENT_CHARSET };
+            let charset_bad = (b as u128) > 127 || (charset >> b) & 1 == 0;
+            if seen_zero || charset_bad {
+                return Err(ApplyError::Revert(
+                    Ident32InvalidByte {
+                        position: U256::from(position),
+                        value: FixedBytes::<1>::from([b]),
+                    }
+                    .abi_encode()
+                    .into(),
+                ));
             }
-            return Ok(());
         }
-        if (b as u128) > 127 || (IDENT_CHARSET >> b) & 1 == 0 {
-            return Err(ApplyError::Revert(
-                Ident32InvalidByte {
-                    position: U256::from(j),
-                    value: FixedBytes::<1>::from([b]),
-                }
-                .abi_encode()
-                .into(),
-            ));
-        }
-        j += 1;
     }
     Ok(())
 }
@@ -781,6 +760,79 @@ fn ident32_to_bytes(name: B256) -> Vec<u8> {
     strip_trailing_zeros(name.0.to_vec())
 }
 
+// `pack_bytes32_4` strips trailing zeros to recover the string length
+// from the 128-byte buffer, so a non-zero byte after a zero would make
+// `"x"` and `"x\0…nonzero"` round-trip differently. Same shape as
+// `validate_ident32`'s null check, scaled to 128 bytes.
+fn reject_embedded_null_in_string(a: &Attribute) -> Result<(), ApplyError> {
+    let mut seen_zero = false;
+    for (position, b) in a
+        .value
+        .iter()
+        .flat_map(|w| w.as_slice().iter())
+        .enumerate()
+    {
+        if *b == 0 {
+            seen_zero = true;
+        } else if seen_zero {
+            return Err(ApplyError::Revert(
+                AttributeStringInvalidByte {
+                    name: a.name,
+                    position: U256::from(position),
+                    value: FixedBytes::<1>::from([*b]),
+                }
+                .abi_encode()
+                .into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// `ATTR_STRING` is UTF-8 by SDK convention; entity_db documents
+// "UTF-8 by SDK convention" but stores bytes verbatim. Since the
+// precompile is the only validation boundary, enforce UTF-8 here so
+// downstream consumers (query engine, RPC JSON serialization) don't
+// silently mishandle non-UTF-8 bytes. Assumes
+// `reject_embedded_null_in_string` already ran, so the content is
+// `pack_bytes32_4`'s output (prefix before the first zero).
+fn reject_invalid_utf8_in_string(a: &Attribute) -> Result<(), ApplyError> {
+    let content = pack_bytes32_4(&a.value);
+    if let Err(e) = std::str::from_utf8(&content) {
+        let position = e.valid_up_to();
+        return Err(ApplyError::Revert(
+            AttributeStringInvalidByte {
+                name: a.name,
+                position: U256::from(position),
+                value: FixedBytes::<1>::from([content[position]]),
+            }
+            .abi_encode()
+            .into(),
+        ));
+    }
+    Ok(())
+}
+
+// Fixed-width value types (UINT, ENTITY_KEY) pack into value[0]; the
+// remaining three words must be zero. Anything else is malformed input
+// — there's no upstream contract to canonicalize it.
+fn reject_non_zero_upper_words(a: &Attribute) -> Result<(), ApplyError> {
+    for (i, word) in a.value.iter().enumerate().skip(1) {
+        if *word != FixedBytes::ZERO {
+            return Err(ApplyError::Revert(
+                AttributeValueMalformed {
+                    name: a.name,
+                    valueType: a.valueType,
+                    wordIndex: U256::from(i),
+                }
+                .abi_encode()
+                .into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn convert_attributes(attrs: &[Attribute]) -> Result<Vec<EntityAttribute>, ApplyError> {
     attrs
         .iter()
@@ -790,11 +842,21 @@ fn convert_attributes(attrs: &[Attribute]) -> Result<Vec<EntityAttribute>, Apply
                 // SDK packs the uint256 left-aligned into value[0]; the
                 // remaining three words are zero. Store the 32 raw
                 // big-endian bytes verbatim.
-                ATTR_UINT => a.value[0].as_slice().to_vec(),
-                ATTR_STRING => pack_bytes32_4(&a.value),
+                ATTR_UINT => {
+                    reject_non_zero_upper_words(a)?;
+                    a.value[0].as_slice().to_vec()
+                }
+                ATTR_STRING => {
+                    reject_embedded_null_in_string(a)?;
+                    reject_invalid_utf8_in_string(a)?;
+                    pack_bytes32_4(&a.value)
+                }
                 // 32 raw bytes — no trailing-zero strip (a real key may
                 // end in zeros).
-                ATTR_ENTITY_KEY => a.value[0].as_slice().to_vec(),
+                ATTR_ENTITY_KEY => {
+                    reject_non_zero_upper_words(a)?;
+                    a.value[0].as_slice().to_vec()
+                }
                 t => {
                     return Err(ApplyError::Fatal(format!(
                         "unknown attribute valueType {t}"
@@ -1070,6 +1132,140 @@ mod tests {
             ApplyError::Fatal(msg) => assert!(msg.contains("99"), "msg was {msg:?}"),
             other => panic!("expected Fatal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn convert_attributes_rejects_uint_with_non_zero_upper_words() {
+        // ATTR_UINT packs the uint256 into value[0]; value[1..4] must
+        // be zero. A non-zero byte in any upper word is malformed —
+        // since there is no upstream contract to canonicalize input,
+        // the precompile must reject it rather than silently dropping
+        // the extra bytes.
+        let mut val0 = [0u8; 32];
+        val0[31] = 42;
+        let mut val2 = [0u8; 32];
+        val2[0] = 1;
+        let name = ident_b256(b"score");
+        let attrs = vec![Attribute {
+            name,
+            valueType: ATTR_UINT,
+            value: [
+                FixedBytes::from(val0),
+                FixedBytes::ZERO,
+                FixedBytes::from(val2),
+                FixedBytes::ZERO,
+            ],
+        }];
+        let err = convert_attributes(&attrs).expect_err("should reject");
+        let bytes = match err {
+            ApplyError::Revert(b) => b,
+            ApplyError::Fatal(_) => panic!("expected revert"),
+        };
+        assert_eq!(&bytes[..4], &AttributeValueMalformed::SELECTOR);
+        let decoded = AttributeValueMalformed::abi_decode_raw(&bytes[4..]).expect("decode");
+        assert_eq!(decoded.name, name);
+        assert_eq!(decoded.valueType, ATTR_UINT);
+        assert_eq!(decoded.wordIndex, U256::from(2u32));
+    }
+
+    #[test]
+    fn convert_attributes_rejects_string_with_embedded_null() {
+        // `pack_bytes32_4` strips trailing zeros to recover the
+        // string length from the 128-byte buffer — so `"a"` and
+        // `"a\0\0"` are indistinguishable on the wire. Reject any
+        // non-zero byte that appears after a zero byte so the wire
+        // format is unambiguous, mirroring `validate_ident32`.
+        let mut val0 = [0u8; 32];
+        val0[0] = b'a';
+        val0[1] = 0;
+        val0[2] = b'b';
+        let name = ident_b256(b"greeting");
+        let attrs = vec![Attribute {
+            name,
+            valueType: ATTR_STRING,
+            value: [
+                FixedBytes::from(val0),
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+            ],
+        }];
+        let err = convert_attributes(&attrs).expect_err("should reject");
+        let bytes = match err {
+            ApplyError::Revert(b) => b,
+            ApplyError::Fatal(_) => panic!("expected revert"),
+        };
+        assert_eq!(&bytes[..4], &AttributeStringInvalidByte::SELECTOR);
+        let decoded = AttributeStringInvalidByte::abi_decode_raw(&bytes[4..]).expect("decode");
+        assert_eq!(decoded.name, name);
+        assert_eq!(decoded.position, U256::from(2u32));
+        assert_eq!(decoded.value, FixedBytes::<1>::from([b'b']));
+    }
+
+    #[test]
+    fn convert_attributes_rejects_string_with_invalid_utf8() {
+        // "abc" + lone 0xff (never a valid UTF-8 start byte) +
+        // trailing zeros. Report position 3 with value 0xff.
+        let mut val0 = [0u8; 32];
+        val0[0] = b'a';
+        val0[1] = b'b';
+        val0[2] = b'c';
+        val0[3] = 0xff;
+        let name = ident_b256(b"greeting");
+        let attrs = vec![Attribute {
+            name,
+            valueType: ATTR_STRING,
+            value: [
+                FixedBytes::from(val0),
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+            ],
+        }];
+        let err = convert_attributes(&attrs).expect_err("should reject");
+        let bytes = match err {
+            ApplyError::Revert(b) => b,
+            ApplyError::Fatal(_) => panic!("expected revert"),
+        };
+        assert_eq!(&bytes[..4], &AttributeStringInvalidByte::SELECTOR);
+        let decoded = AttributeStringInvalidByte::abi_decode_raw(&bytes[4..]).expect("decode");
+        assert_eq!(decoded.name, name);
+        assert_eq!(decoded.position, U256::from(3u32));
+        assert_eq!(decoded.value, FixedBytes::<1>::from([0xffu8]));
+    }
+
+    #[test]
+    fn convert_attributes_rejects_entity_key_with_non_zero_upper_words() {
+        // ATTR_ENTITY_KEY is fixed-width: the 32-byte key lives in
+        // value[0] and value[1..4] must be zero. The precompile is the
+        // canonicalization boundary — silently dropping bytes from the
+        // upper words would let callers smuggle data past it.
+        let mut val0 = [0u8; 32];
+        val0[0] = 0xab;
+        val0[1] = 0xcd;
+        let mut val3 = [0u8; 32];
+        val3[15] = 0xff;
+        let name = ident_b256(b"linkedTo");
+        let attrs = vec![Attribute {
+            name,
+            valueType: ATTR_ENTITY_KEY,
+            value: [
+                FixedBytes::from(val0),
+                FixedBytes::ZERO,
+                FixedBytes::ZERO,
+                FixedBytes::from(val3),
+            ],
+        }];
+        let err = convert_attributes(&attrs).expect_err("should reject");
+        let bytes = match err {
+            ApplyError::Revert(b) => b,
+            ApplyError::Fatal(_) => panic!("expected revert"),
+        };
+        assert_eq!(&bytes[..4], &AttributeValueMalformed::SELECTOR);
+        let decoded = AttributeValueMalformed::abi_decode_raw(&bytes[4..]).expect("decode");
+        assert_eq!(decoded.name, name);
+        assert_eq!(decoded.valueType, ATTR_ENTITY_KEY);
+        assert_eq!(decoded.wordIndex, U256::from(3u32));
     }
 
     #[test]

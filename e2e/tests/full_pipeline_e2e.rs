@@ -303,9 +303,9 @@ async fn full_pipeline() -> eyre::Result<()> {
     assert!(carol_keys.contains(&alice_key));
     assert!(carol_keys.contains(&carol_key));
 
-    // Negative: alice (the old owner) tries to UPDATE — must revert
-    // at the contract level (status=0x0). The contract enforces
-    // owner check before reaching the precompile.
+    // Negative: alice (the old owner) tries to UPDATE — the precompile
+    // enforces the owner check and reverts with the `NotOwner` selector,
+    // surfacing as status=0x0 to the caller.
     let bad_update = Operation {
         operationType: OP_UPDATE,
         entityKey: alice_key,

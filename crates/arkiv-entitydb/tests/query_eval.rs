@@ -10,7 +10,8 @@ use alloy_primitives::{Address, B256, U256};
 use arkiv_entitydb::query::parse;
 use arkiv_entitydb::test_utils::{InMemoryStateAdapter, InMemoryStateDb};
 use arkiv_entitydb::{
-    ATTR_STRING, ATTR_UINT, Attribute, create, delete, resolve_id, transfer, update,
+    ATTR_ENTITY_KEY, ATTR_STRING, ATTR_UINT, Attribute, create, delete, resolve_id, transfer,
+    update,
 };
 
 fn alice() -> Address {
@@ -172,6 +173,78 @@ fn equality_user_numeric_annotation() {
     )
     .expect("create");
     assert_eq!(ids(&mut s, "score = 42"), vec![0]);
+}
+
+#[test]
+fn equality_user_entity_key_annotation() {
+    let mut db = fresh();
+    let mut s = InMemoryStateAdapter::new(&mut db);
+    let ref_a = key_n(0xaa);
+    let ref_b = key_n(0xbb);
+    create(
+        &mut s,
+        alice(),
+        key_n(1),
+        100,
+        10,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![Attribute {
+            key: b"ref".to_vec(),
+            value_type: ATTR_ENTITY_KEY,
+            value: ref_a.as_slice().to_vec(),
+        }],
+    )
+    .expect("create");
+    create(
+        &mut s,
+        alice(),
+        key_n(2),
+        100,
+        10,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![Attribute {
+            key: b"ref".to_vec(),
+            value_type: ATTR_ENTITY_KEY,
+            value: ref_b.as_slice().to_vec(),
+        }],
+    )
+    .expect("create");
+    let q = format!("ref = 0x{}", hex_lower(ref_a.as_slice()));
+    assert_eq!(ids(&mut s, &q), vec![0]);
+}
+
+#[test]
+fn inclusion_user_entity_key_annotation() {
+    let mut db = fresh();
+    let mut s = InMemoryStateAdapter::new(&mut db);
+    let ref_a = key_n(0xaa);
+    let ref_b = key_n(0xbb);
+    let ref_c = key_n(0xcc);
+    for (i, r) in [(1u8, ref_a), (2, ref_b), (3, ref_c)] {
+        create(
+            &mut s,
+            alice(),
+            key_n(i),
+            100,
+            10,
+            b"".to_vec(),
+            b"text/plain".to_vec(),
+            vec![Attribute {
+                key: b"ref".to_vec(),
+                value_type: ATTR_ENTITY_KEY,
+                value: r.as_slice().to_vec(),
+            }],
+        )
+        .expect("create");
+    }
+    let q = format!(
+        "ref IN (0x{} 0x{})",
+        hex_lower(ref_a.as_slice()),
+        hex_lower(ref_c.as_slice())
+    );
+    assert_eq!(ids(&mut s, &q), vec![0, 2]);
 }
 
 #[test]

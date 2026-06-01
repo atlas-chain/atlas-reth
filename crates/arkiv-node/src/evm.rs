@@ -33,15 +33,23 @@ use std::sync::Arc;
 // mismatches across the two `revm` editions if they ever drift.
 use alloy_evm::{
     Database, Evm, EvmEnv, EvmFactory,
+    block::BlockExecutor,
     precompiles::PrecompilesMap,
     revm::{
         Inspector,
         context::{BlockEnv, CfgEnv, result::ResultAndState},
         context_interface::result::EVMError,
+        database::State,
         inspector::NoOpInspector,
     },
 };
-use alloy_op_evm::{OpBlockExecutorFactory, OpEvm, OpEvmContext, OpEvmFactory, OpTxError};
+use alloy_op_evm::{
+    OpBlockExecutorFactory, OpEvm, OpEvmContext, OpEvmFactory, OpTxError,
+    post_exec::{
+        PostExecEvmFactoryAdapter, PostExecEvmFactoryHooks, PostExecExecutedTx,
+        PostExecExecutorExt, PostExecTxContext,
+    },
+};
 use alloy_primitives::{Address, Bytes};
 use op_revm::{OpHaltReason, OpSpecId};
 
@@ -49,7 +57,7 @@ use alloy_consensus::Header;
 use alloy_eips::eip1559::BaseFeeParams;
 use alloy_hardforks::EthereumHardforks;
 use op_alloy_consensus::EIP1559ParamError;
-use reth_evm::{EvmEnvFor, ExecutionCtxFor};
+use reth_evm::{EvmEnvFor, ExecutionCtxFor, execute::BlockBuilder};
 use reth_node_api::PayloadAttributesBuilder;
 use reth_node_builder::{
     BuilderContext, ConfigureEngineEvm, ConfigureEvm, DebugNode, FullNodeComponents, FullNodeTypes,
@@ -59,8 +67,9 @@ use reth_node_builder::{
 };
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_node::{
-    OpAddOns, OpBlockAssembler, OpEngineApiBuilder, OpEngineTypes, OpEvmConfig,
-    OpNextBlockEnvAttributes, OpNode, OpRethReceiptBuilder, OpStorage, OpTx,
+    ConfigurePostExecEvm, OpAddOns, OpBlockAssembler, OpEngineApiBuilder, OpEngineTypes,
+    OpEvmConfig, OpNextBlockEnvAttributes, OpNode, OpRethReceiptBuilder, OpStorage, OpTx,
+    PostExecMode,
     node::{
         OpConsensusBuilder, OpEngineValidatorBuilder, OpNetworkBuilder, OpPayloadBuilder,
         OpPoolBuilder,
@@ -69,7 +78,7 @@ use reth_optimism_node::{
     rpc::OpEthApiBuilder,
 };
 use reth_optimism_primitives::{OpBlock, OpPrimitives};
-use reth_primitives_traits::{SealedBlock, SealedHeader};
+use reth_primitives_traits::{NodePrimitives, SealedBlock, SealedHeader};
 
 use arkiv_genesis::ARKIV_ADDRESS;
 
@@ -136,6 +145,29 @@ impl EvmFactory for ArkivOpEvmFactory {
         let mut evm = self.inner.create_evm_with_inspector(db, input, inspector);
         self.install(&mut evm);
         ArkivOpEvm { inner: evm }
+    }
+}
+
+// `OpBlockExecutorFactory` only implements `BlockExecutorFactory` for the
+// default `OpEvmFactory` or a custom factory wrapped in
+// `PostExecEvmFactoryAdapter`, so the adapter requires our factory to
+// expose the SDM post-exec hooks. We delegate to the inner `OpEvm`, which
+// carries the real implementation.
+impl PostExecEvmFactoryHooks for ArkivOpEvmFactory {
+    fn begin_post_exec_tx<DB, I>(evm: &mut Self::Evm<DB, I>, ctx: PostExecTxContext)
+    where
+        DB: Database,
+        I: Inspector<Self::Context<DB>>,
+    {
+        evm.inner.begin_post_exec_tx(ctx);
+    }
+
+    fn take_last_post_exec_tx_result<DB, I>(evm: &mut Self::Evm<DB, I>) -> PostExecExecutedTx
+    where
+        DB: Database,
+        I: Inspector<Self::Context<DB>>,
+    {
+        evm.inner.take_last_post_exec_tx_result()
     }
 }
 
@@ -235,8 +267,12 @@ where
 // depend on the EVM factory — it only reads `chain_spec()` and
 // constructs values from the payload data.
 
-type InnerEvmConfig =
-    OpEvmConfig<OpChainSpec, OpPrimitives, OpRethReceiptBuilder, ArkivOpEvmFactory>;
+type InnerEvmConfig = OpEvmConfig<
+    OpChainSpec,
+    OpPrimitives,
+    OpRethReceiptBuilder,
+    PostExecEvmFactoryAdapter<ArkivOpEvmFactory>,
+>;
 type DefaultEvmConfig = OpEvmConfig<OpChainSpec, OpPrimitives, OpRethReceiptBuilder>;
 
 #[derive(Debug, Clone)]
@@ -255,11 +291,12 @@ impl ArkivOpEvmConfig {
         let executor_factory = OpBlockExecutorFactory::new(
             OpRethReceiptBuilder::default(),
             chain_spec.clone(),
-            ArkivOpEvmFactory::new(),
+            PostExecEvmFactoryAdapter::new(ArkivOpEvmFactory::new()),
         );
         let inner = OpEvmConfig {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
             executor_factory,
+            sdm_enabled: false,
             _pd: core::marker::PhantomData,
         };
         let inner_default = OpEvmConfig::new(chain_spec, OpRethReceiptBuilder::default());
@@ -280,8 +317,11 @@ impl ConfigureEvm for ArkivOpEvmConfig {
     type Primitives = OpPrimitives;
     type Error = EIP1559ParamError;
     type NextBlockEnvCtx = OpNextBlockEnvAttributes;
-    type BlockExecutorFactory =
-        OpBlockExecutorFactory<OpRethReceiptBuilder, Arc<OpChainSpec>, ArkivOpEvmFactory>;
+    type BlockExecutorFactory = OpBlockExecutorFactory<
+        OpRethReceiptBuilder,
+        Arc<OpChainSpec>,
+        PostExecEvmFactoryAdapter<ArkivOpEvmFactory>,
+    >;
     type BlockAssembler = OpBlockAssembler<OpChainSpec>;
 
     fn block_executor_factory(&self) -> &Self::BlockExecutorFactory {
@@ -340,6 +380,43 @@ impl ConfigureEngineEvm<OpExecData> for ArkivOpEvmConfig {
         payload: &OpExecData,
     ) -> Result<impl reth_evm::ExecutableTxIterator<Self>, <Self as ConfigureEvm>::Error> {
         self.inner_default.tx_iterator_for_payload(payload)
+    }
+}
+
+// `OpPayloadBuilder` now requires the EVM config to implement
+// `ConfigurePostExecEvm` (SDM post-exec support). Upstream impls it for
+// `OpEvmConfig<.., PostExecEvmFactoryAdapter<F>>`, which is exactly our
+// `inner` — so forward both methods to it.
+impl ConfigurePostExecEvm for ArkivOpEvmConfig {
+    fn post_exec_executor_for_block<'a, DB: Database>(
+        &'a self,
+        db: &'a mut State<DB>,
+        block: &'a SealedBlock<<Self::Primitives as NodePrimitives>::Block>,
+        post_exec_mode: PostExecMode,
+    ) -> Result<
+        impl BlockExecutor<
+            Transaction = <Self::Primitives as NodePrimitives>::SignedTx,
+            Receipt = <Self::Primitives as NodePrimitives>::Receipt,
+        > + PostExecExecutorExt
+        + 'a,
+        Self::Error,
+    > {
+        self.inner
+            .post_exec_executor_for_block(db, block, post_exec_mode)
+    }
+
+    fn post_exec_builder_for_next_block<'a, DB: Database + 'a>(
+        &'a self,
+        db: &'a mut State<DB>,
+        parent: &'a SealedHeader<<Self::Primitives as NodePrimitives>::BlockHeader>,
+        attributes: Self::NextBlockEnvCtx,
+        post_exec_mode: PostExecMode,
+    ) -> Result<
+        impl BlockBuilder<Primitives = Self::Primitives, Executor: PostExecExecutorExt> + 'a,
+        Self::Error,
+    > {
+        self.inner
+            .post_exec_builder_for_next_block(db, parent, attributes, post_exec_mode)
     }
 }
 
@@ -454,7 +531,7 @@ where
 
 /// Local-mining payload attributes builder. Verbatim copy of
 /// `OpLocalPayloadAttributesBuilder` from op-reth's private module; kept
-/// in sync with `op-reth/v2.2.0`.
+/// in sync with `op-reth/v2.2.5`.
 struct ArkivLocalPayloadAttributesBuilder {
     chain_spec: Arc<OpChainSpec>,
 }

@@ -204,6 +204,28 @@ its own mise-managed tooling (`brew install mise`, then `mise install` +
 `just build-deps` inside the submodule). See
 [`ThirdParty/optimism/docs/ai/acceptance-tests.md`](ThirdParty/optimism/docs/ai/acceptance-tests.md).
 
+### Running arkiv-node as the L2 EL
+
+`arkiv-node` *is* op-reth v2.2.5 + the Arkiv precompile, so `op-devstack` drives it
+through its standard op-reth path with **no submodule patching** — point the harness'
+binary resolver at our release build and select the op-reth backend:
+
+```bash
+mise install                                    # one-time, inside ThirdParty/optimism
+just harness-build-deps   # OP contracts + cannon prestates (one-time)
+just harness-run          # builds arkiv-node release, runs the base smoke test as the L2 EL
+just harness-run "-run TestCLAdvance ./op-acceptance-tests/tests/base/"   # any test/package
+```
+
+`harness-run` wires up `RUST_BINARY_PATH_OP_RETH` (→ `target/release/arkiv-node`),
+`DEVSTACK_L2EL_KIND=op-reth`, and `RUST_JIT_BUILD=1`.
+
+Running the full `op-acceptance-tests` tree this way passes the entire functional
+EL/interop/sync/hardfork surface — **49/70 packages, ~156/237 tests green**; the
+remaining failures are all fault-proof/flashblocks/supervisor infra we didn't
+provision (kona/ZK prestates, `op-rbuilder`) or host port-exhaustion flakes, none in
+the arkiv-node EL.
+
 ---
 
 ## Documentation

@@ -490,7 +490,7 @@ pub fn create<S: StateAdapter>(
     )?;
 
     // 3) Insert into every bitmap (built-in + user).
-    for (k, v) in built_in_pairs(
+    for (k, v) in built_in_annotations(
         sender,
         sender,
         entity_key,
@@ -499,9 +499,9 @@ pub fn create<S: StateAdapter>(
         &content_type,
     )
     .into_iter()
-    .chain(user_pairs(&attributes))
+    .chain(user_annotations(&attributes))
     {
-        insert_into_pair_bitmap(state, &k, &v, entity_id)?;
+        insert_into_indexes(state, &k, &v, entity_id)?;
     }
 
     // 4) Write the entity RLP.
@@ -552,9 +552,9 @@ pub fn update<S: StateAdapter>(
     // `$all`) aren't included on either side, so the diff doesn't
     // touch them. `$contentType` IS in the diff so it moves if the
     // content type changed.
-    let old_pairs = updatable_pairs(&entity.content_type, &entity.attributes);
-    let new_pairs = updatable_pairs(&content_type, &attributes);
-    apply_pair_diff(state, &old_pairs, &new_pairs, entity_id)?;
+    let old_annotations = updatable_annotations(&entity.content_type, &entity.attributes);
+    let new_annotations = updatable_annotations(&content_type, &attributes);
+    apply_annotation_diff(state, &old_annotations, &new_annotations, entity_id)?;
 
     entity.payload = payload;
     entity.content_type = content_type;
@@ -578,13 +578,13 @@ pub fn extend<S: StateAdapter>(
     let entity_id = read_entity_id(state, entity_addr)?;
     let mut entity = read_entity(state, entity_addr)?;
 
-    remove_from_pair_bitmap(
+    remove_from_indexes(
         state,
         ANNOT_EXPIRATION,
         &encode_u64_be(entity.expires_at),
         entity_id,
     )?;
-    insert_into_pair_bitmap(
+    insert_into_indexes(
         state,
         ANNOT_EXPIRATION,
         &encode_u64_be(new_expires_at),
@@ -611,8 +611,8 @@ pub fn transfer<S: StateAdapter>(
     let entity_id = read_entity_id(state, entity_addr)?;
     let mut entity = read_entity(state, entity_addr)?;
 
-    remove_from_pair_bitmap(state, ANNOT_OWNER, &encode_address(entity.owner), entity_id)?;
-    insert_into_pair_bitmap(state, ANNOT_OWNER, &encode_address(new_owner), entity_id)?;
+    remove_from_indexes(state, ANNOT_OWNER, &encode_address(entity.owner), entity_id)?;
+    insert_into_indexes(state, ANNOT_OWNER, &encode_address(new_owner), entity_id)?;
 
     entity.owner = new_owner;
     entity.last_modified_at_block = current_block;
@@ -630,7 +630,7 @@ pub fn delete<S: StateAdapter>(state: &mut S, entity_key: B256) -> Result<()> {
     let entity_id = read_entity_id(state, entity_addr)?;
     let entity = read_entity(state, entity_addr)?;
 
-    for (k, v) in built_in_pairs(
+    for (k, v) in built_in_annotations(
         entity.creator,
         entity.owner,
         entity_key,
@@ -639,9 +639,9 @@ pub fn delete<S: StateAdapter>(state: &mut S, entity_key: B256) -> Result<()> {
         &entity.content_type,
     )
     .into_iter()
-    .chain(user_pairs(&entity.attributes))
+    .chain(user_annotations(&entity.attributes))
     {
-        remove_from_pair_bitmap(state, &k, &v, entity_id)?;
+        remove_from_indexes(state, &k, &v, entity_id)?;
     }
 
     // Clear ID-map slots.
@@ -684,9 +684,10 @@ fn read_entity_id<S: StateAdapter>(state: &mut S, entity_addr: Address) -> Resul
     ))
 }
 
-/// All built-in `(key, value)` pairs for an entity. Used by `create`
-/// (to insert) and `delete`/`expire` (to remove).
-fn built_in_pairs(
+/// All built-in annotations (as `(key, value)` byte pairs) for an
+/// entity. Used by `create` (to insert) and `delete` / `expire` (to
+/// remove).
+fn built_in_annotations(
     creator: Address,
     owner: Address,
     entity_key: B256,
@@ -712,8 +713,9 @@ fn built_in_pairs(
 /// The value bytes are stored verbatim — the precompile is responsible
 /// for producing the canonical byte form per `value_type` (32-byte BE
 /// for `ATTR_UINT`, packed bytes for `ATTR_STRING`, 32 raw bytes for
-/// `ATTR_ENTITY_KEY`).
-fn user_pairs<'a>(
+/// `ATTR_ENTITY_KEY`). The `value_type` discriminator itself is not
+/// part of the on-chain index key/value bytes.
+fn user_annotations<'a>(
     attributes: &'a [Attribute],
 ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a {
     attributes
@@ -721,20 +723,20 @@ fn user_pairs<'a>(
         .map(|a| (a.key.clone(), a.value.clone()))
 }
 
-/// Pairs that an UPDATE op diffs: the user attributes plus
+/// Annotations that an UPDATE op diffs: the user attributes plus
 /// `$contentType`. Other built-ins (`$creator` / `$key` /
 /// `$createdAtBlock` / `$owner` / `$expiration` / `$all`) don't change
 /// on UPDATE and so aren't in the diff set.
-fn updatable_pairs(content_type: &[u8], attributes: &[Attribute]) -> Vec<(Vec<u8>, Vec<u8>)> {
+fn updatable_annotations(content_type: &[u8], attributes: &[Attribute]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = Vec::with_capacity(1 + attributes.len());
     out.push((ANNOT_CONTENT_TYPE.to_vec(), content_type.to_vec()));
-    out.extend(user_pairs(attributes));
+    out.extend(user_annotations(attributes));
     out
 }
 
-/// Diff two `(key, value)` pair sets and apply removals + insertions
-/// to the corresponding pair bitmaps.
-fn apply_pair_diff<S: StateAdapter>(
+/// Diff two annotation sets and apply removals + insertions to the
+/// corresponding tier-1 pair bitmaps (and tier-2 index trees).
+fn apply_annotation_diff<S: StateAdapter>(
     state: &mut S,
     old: &[(Vec<u8>, Vec<u8>)],
     new: &[(Vec<u8>, Vec<u8>)],
@@ -744,15 +746,19 @@ fn apply_pair_diff<S: StateAdapter>(
     let old_set: BTreeSet<&(Vec<u8>, Vec<u8>)> = old.iter().collect();
     let new_set: BTreeSet<&(Vec<u8>, Vec<u8>)> = new.iter().collect();
     for p in old.iter().filter(|p| !new_set.contains(*p)) {
-        remove_from_pair_bitmap(state, &p.0, &p.1, entity_id)?;
+        remove_from_indexes(state, &p.0, &p.1, entity_id)?;
     }
     for p in new.iter().filter(|p| !old_set.contains(*p)) {
-        insert_into_pair_bitmap(state, &p.0, &p.1, entity_id)?;
+        insert_into_indexes(state, &p.0, &p.1, entity_id)?;
     }
     Ok(())
 }
 
-fn insert_into_pair_bitmap<S: StateAdapter>(
+/// Insert `entity_id` into the tier-1 pair bitmap for
+/// `(annot_key, annot_val)`. On the first entity to use that pair,
+/// also insert `annot_val` into the per-attribute tier-2
+/// [`IndexTree`].
+fn insert_into_indexes<S: StateAdapter>(
     state: &mut S,
     annot_key: &[u8],
     annot_val: &[u8],
@@ -771,7 +777,12 @@ fn insert_into_pair_bitmap<S: StateAdapter>(
     Ok(())
 }
 
-fn remove_from_pair_bitmap<S: StateAdapter>(
+/// Remove `entity_id` from the tier-1 pair bitmap for
+/// `(annot_key, annot_val)`. When the last entity using that pair is
+/// gone, also remove `annot_val` from the per-attribute tier-2
+/// [`IndexTree`] (tombstoning the index account if the tree becomes
+/// empty).
+fn remove_from_indexes<S: StateAdapter>(
     state: &mut S,
     annot_key: &[u8],
     annot_val: &[u8],
@@ -1340,12 +1351,12 @@ mod tests {
     }
 
     #[test]
-    fn insert_pair_bitmap_writes_index_on_first_entity() {
+    fn insert_into_indexes_writes_tier2_on_first_entity() {
         let mut db = fresh_db();
         let val = b"hello".to_vec();
         {
             let mut state = InMemoryStateAdapter::new(&mut db);
-            insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
+            insert_into_indexes(&mut state, b"tag", &val, 0).unwrap();
         }
         let tree = read_art_raw(&db, b"tag");
         let vals: Vec<Vec<u8>> = tree.iter_gte(b"").collect();
@@ -1358,26 +1369,26 @@ mod tests {
         // Second insert of same value — bitmap was non-empty, ART unchanged.
         {
             let mut state = InMemoryStateAdapter::new(&mut db);
-            insert_into_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
+            insert_into_indexes(&mut state, b"tag", &val, 1).unwrap();
         }
         let tree2 = read_art_raw(&db, b"tag");
         assert_eq!(tree2.iter_gte(b"").count(), 1);
     }
 
     #[test]
-    fn remove_pair_bitmap_removes_index_on_last_entity() {
+    fn remove_from_indexes_removes_tier2_on_last_entity() {
         let mut db = fresh_db();
         let val = b"hello".to_vec();
         {
             let mut state = InMemoryStateAdapter::new(&mut db);
-            insert_into_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
-            insert_into_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
+            insert_into_indexes(&mut state, b"tag", &val, 0).unwrap();
+            insert_into_indexes(&mut state, b"tag", &val, 1).unwrap();
         }
 
         // Remove first entity — bitmap still has entity 1, ART unchanged.
         {
             let mut state = InMemoryStateAdapter::new(&mut db);
-            remove_from_pair_bitmap(&mut state, b"tag", &val, 0).unwrap();
+            remove_from_indexes(&mut state, b"tag", &val, 0).unwrap();
         }
         assert!(
             !read_art_raw(&db, b"tag").is_empty(),
@@ -1387,7 +1398,7 @@ mod tests {
         // Remove last entity — bitmap is now empty, index account tombstoned.
         {
             let mut state = InMemoryStateAdapter::new(&mut db);
-            remove_from_pair_bitmap(&mut state, b"tag", &val, 1).unwrap();
+            remove_from_indexes(&mut state, b"tag", &val, 1).unwrap();
         }
         assert!(
             read_art_raw(&db, b"tag").is_empty(),

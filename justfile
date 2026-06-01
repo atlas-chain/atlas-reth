@@ -227,11 +227,13 @@ harness-check:
     cd ThirdParty/optimism && go test -run 'a^' ./op-acceptance-tests/...
 
 # Build the runtime artifacts the harness needs that do NOT build just-in-time:
-# the OP contract bundle and the cannon fault-proof prestates (both required by
-# the Minimal preset's challenger, even for non-proof tests). One-time;
-# re-runs are incremental. Needs the mise toolchain — run `mise install` in
-# ThirdParty/optimism first. The Rust binaries (op-reth → arkiv-node, kona-host)
-# are handled by `harness-run`, not here.
+# the OP contract bundle, the cannon fault-proof prestates (both required by the
+# Minimal preset's challenger, even for non-proof tests), and the flashblocks
+# builders (op-rbuilder + rollup-boost — pre-built here so the flashblocks suite
+# doesn't time out JIT-compiling them mid-test). One-time; re-runs are
+# incremental. Needs the mise toolchain — run `mise install` in
+# ThirdParty/optimism first. arkiv-node (op-reth) + kona-host are handled by
+# `harness-run` / `RUST_JIT_BUILD`, not here.
 harness-build-deps:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -240,6 +242,8 @@ harness-build-deps:
     mise exec -- just build-no-tests
     cd "{{ justfile_directory() }}/ThirdParty/optimism"
     mise exec -- just cannon-prestates
+    ( cd rust/op-rbuilder && mise exec -- cargo build -p op-rbuilder --bin op-rbuilder )
+    ( cd rust/rollup-boost && mise exec -- cargo build -p rollup-boost --bin rollup-boost )
 
 # Run an OP acceptance test with arkiv-node substituted as the L2 EL.
 # arkiv-node IS op-reth v2.2.5 + the Arkiv precompile, so op-devstack drives it
@@ -258,3 +262,19 @@ harness-run *test='-run TestRPCConnectivity ./op-acceptance-tests/tests/base/':
     DEVSTACK_L2EL_KIND=op-reth \
     RUST_JIT_BUILD=1 \
         mise exec -- go test -count=1 -timeout 30m {{ test }}
+
+# Run the whole op-acceptance-tests tree against arkiv-node as the L2 EL.
+# Each package spins a full multi-node devnet; running many in parallel exhausts
+# the host's ephemeral ports (op-node fails with "bind: can't assign requested
+# address"), so this defaults to low package-parallelism (`-p 2`) and serial
+# in-package execution (`-parallel 1`). Drop to `jobs=1` for the heaviest sync
+# suites. Run `just harness-build-deps` once first. Pass a narrower path to scope it.
+harness-suite jobs='2' tree='./op-acceptance-tests/tests/...':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p arkiv-node --release
+    cd "{{ justfile_directory() }}/ThirdParty/optimism"
+    RUST_BINARY_PATH_OP_RETH="{{ justfile_directory() }}/target/release/arkiv-node" \
+    DEVSTACK_L2EL_KIND=op-reth \
+    RUST_JIT_BUILD=1 \
+        mise exec -- go test -count=1 -timeout 30m -p {{ jobs }} -parallel 1 {{ tree }}

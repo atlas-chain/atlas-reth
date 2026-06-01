@@ -147,6 +147,8 @@ just genesis | jq .alloc
 ├── scripts/fixtures/         # example batch JSON files
 ├── demo/fixtures/            # smaller demo fixtures
 ├── docker/                   # runtime + dev container images
+├── ThirdParty/
+│   └── optimism/             # OP monorepo submodule, pinned to op-reth/v2.2.5 — hosts the Go acceptance-test harness
 └── justfile                  # all dev/test recipes
 ```
 
@@ -174,6 +176,33 @@ match.
 See [`docs/4_engineering.md`](docs/4_engineering.md) §2 for the
 genesis-construction rules (Path-A chainspecs, Holocene `extraData`,
 why we don't mutate the chainspec at startup).
+
+---
+
+## Acceptance harness
+
+The OP **Go acceptance-test harness** (`op-acceptance-tests` + the in-process
+`op-devstack`/`sysgo`) lives in the Optimism monorepo, vendored as a submodule
+under `ThirdParty/optimism` and pinned to the **`op-reth/v2.2.5`** tag so it stays
+CLI-coherent with op-reth at that commit. `op-acceptance-tests` is part of the
+monorepo's single Go module and imports across ~15 of its packages, so the whole
+submodule tree is needed to compile it — it cannot be checked out in isolation.
+
+**Compiling the harness needs only Go** — any host Go ≥ 1.24 (the `go.mod`
+floor); no mise required:
+
+```bash
+brew install go       # one-time: any Go >= 1.24
+
+just harness-init     # fetch/checkout the submodule at the pinned commit
+just harness-check    # compile op-acceptance-tests (and its import closure)
+```
+
+Actually **running** the suite additionally needs the monorepo's runtime
+build-deps — contracts (forge), cannon prestates, and Rust binaries — built via
+its own mise-managed tooling (`brew install mise`, then `mise install` +
+`just build-deps` inside the submodule). See
+[`ThirdParty/optimism/docs/ai/acceptance-tests.md`](ThirdParty/optimism/docs/ai/acceptance-tests.md).
 
 ---
 

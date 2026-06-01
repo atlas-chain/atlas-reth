@@ -256,21 +256,25 @@ impl Parser {
             }
             Some(Token::Gt) => {
                 self.advance();
+                self.reject_range_on_random_distribution()?;
                 let value = self.parse_value(&key)?;
                 Ok(Query::Gt { key, value })
             }
             Some(Token::Gte) => {
                 self.advance();
+                self.reject_range_on_random_distribution()?;
                 let value = self.parse_value(&key)?;
                 Ok(Query::Gte { key, value })
             }
             Some(Token::Lt) => {
                 self.advance();
+                self.reject_range_on_random_distribution()?;
                 let value = self.parse_value(&key)?;
                 Ok(Query::Lt { key, value })
             }
             Some(Token::Lte) => {
                 self.advance();
+                self.reject_range_on_random_distribution()?;
                 let value = self.parse_value(&key)?;
                 Ok(Query::Lte { key, value })
             }
@@ -288,6 +292,37 @@ impl Parser {
                 "expected '=', '!=', '>', '>=', '<', '<=', '~', '!~', 'IN', or 'NOT IN' after key; got {t:?}"
             ),
             None => bail!("expected operator after key, got end of input"),
+        }
+    }
+
+    /// Reject range operators (`>`, `>=`, `<`, `<=`) when the RHS
+    /// literal is an `Address` or `EntityKey` — those are
+    /// random-distribution values with no meaningful ordering, so the
+    /// query would just hit an (always-absent) tier-2 index tree and
+    /// return empty. Failing fast at parse time gives a useful error
+    /// instead. Equality (`=`, `!=`) and set membership (`IN`,
+    /// `NOT IN`) on addresses / keys remain valid — those are backed
+    /// by the tier-1 pair bitmap.
+    ///
+    /// Glob (`~`, `!~`) is already restricted to `Literal::String` by
+    /// [`parse_glob_pattern`], so no check is needed for it here.
+    ///
+    /// Known gap: `$key > "0x…64hex"` (quoted string) is not caught
+    /// because the lexer emits `Token::StringLit`, not
+    /// `Token::EntityKey`. The runtime falls back to the natural-empty
+    /// behavior in that case. The SDK does not currently issue range
+    /// queries on `$key`, so this gap is acceptable.
+    fn reject_range_on_random_distribution(&self) -> Result<()> {
+        match self.peek() {
+            Some(Token::Address(_)) => bail!(
+                "range operators (>, >=, <, <=) are not supported on \
+                 address values — addresses have no meaningful ordering"
+            ),
+            Some(Token::EntityKey(_)) => bail!(
+                "range operators (>, >=, <, <=) are not supported on \
+                 entity-key values — entity keys have no meaningful ordering"
+            ),
+            _ => Ok(()),
         }
     }
 
@@ -613,6 +648,86 @@ mod tests {
         assert!(parse(r#"$expiration = "foo""#).is_err());
         assert!(parse("$owner = 42").is_err());
         assert!(parse(r#"$contentType = 0xaabbccddeeff00112233445566778899aabbccdd"#).is_err());
+    }
+
+    // ── Range ────────────────────────────────────────────────────────
+
+    #[test]
+    fn range_user_numeric() {
+        assert_eq!(
+            p("score > 100"),
+            Query::Gt {
+                key: user("score"),
+                value: user_num(100),
+            }
+        );
+        assert_eq!(
+            p("score <= 50"),
+            Query::Lte {
+                key: user("score"),
+                value: user_num(50),
+            }
+        );
+    }
+
+    #[test]
+    fn range_builtin_numeric() {
+        assert_eq!(
+            p("$expiration >= 1000000"),
+            Query::Gte {
+                key: builtin(BuiltIn::Expiration),
+                value: val(&1_000_000u64.to_be_bytes()),
+            }
+        );
+    }
+
+    #[test]
+    fn range_rejects_address_literal() {
+        // Addresses have no meaningful ordering — range operators are
+        // rejected at parse time for both built-ins and user attrs.
+        let addr = "0xaabbccddeeff00112233445566778899aabbccdd";
+        for op in [">", ">=", "<", "<="] {
+            assert!(
+                parse(&format!("$owner {op} {addr}")).is_err(),
+                "range op {op:?} on address literal (built-in) should error"
+            );
+            assert!(
+                parse(&format!("ref {op} {addr}")).is_err(),
+                "range op {op:?} on address literal (user attr) should error"
+            );
+        }
+    }
+
+    #[test]
+    fn range_rejects_entity_key_literal() {
+        // Entity keys are random 32-byte hashes — same rationale as
+        // addresses.
+        let ek = "0x1111111111111111111111111111111111111111000000000000000000000000";
+        for op in [">", ">=", "<", "<="] {
+            assert!(
+                parse(&format!("$key {op} {ek}")).is_err(),
+                "range op {op:?} on entity-key literal (built-in) should error"
+            );
+            assert!(
+                parse(&format!("ref {op} {ek}")).is_err(),
+                "range op {op:?} on entity-key literal (user attr) should error"
+            );
+        }
+    }
+
+    #[test]
+    fn eq_and_in_still_accept_address_and_entity_key() {
+        // Sanity: the range-only rejection doesn't leak into the
+        // equality / set-membership paths — those are backed by the
+        // tier-1 pair bitmap and remain valid for random-distribution
+        // values.
+        let addr = "0xaabbccddeeff00112233445566778899aabbccdd";
+        let ek = "0x1111111111111111111111111111111111111111000000000000000000000000";
+        assert!(parse(&format!("$owner = {addr}")).is_ok());
+        assert!(parse(&format!("$owner != {addr}")).is_ok());
+        assert!(parse(&format!("$owner IN ({addr})")).is_ok());
+        assert!(parse(&format!("$key = {ek}")).is_ok());
+        assert!(parse(&format!("$key IN ({ek})")).is_ok());
     }
 
     // ── Inclusion ────────────────────────────────────────────────────

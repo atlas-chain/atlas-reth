@@ -225,3 +225,36 @@ harness-init:
 # test package + its cross-repo import closure, runs no tests).
 harness-check:
     cd ThirdParty/optimism && go test -run 'a^' ./op-acceptance-tests/...
+
+# Build the runtime artifacts the harness needs that do NOT build just-in-time:
+# the OP contract bundle and the cannon fault-proof prestates (both required by
+# the Minimal preset's challenger, even for non-proof tests). One-time;
+# re-runs are incremental. Needs the mise toolchain — run `mise install` in
+# ThirdParty/optimism first. The Rust binaries (op-reth → arkiv-node, kona-host)
+# are handled by `harness-run`, not here.
+harness-build-deps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{ justfile_directory() }}/ThirdParty/optimism/packages/contracts-bedrock"
+    mise exec -- just install
+    mise exec -- just build-no-tests
+    cd "{{ justfile_directory() }}/ThirdParty/optimism"
+    mise exec -- just cannon-prestates
+
+# Run an OP acceptance test with arkiv-node substituted as the L2 EL.
+# arkiv-node IS op-reth v2.2.5 + the Arkiv precompile, so op-devstack drives it
+# through the standard op-reth path: RUST_BINARY_PATH_OP_RETH points the harness'
+# rustbin resolver at our release build (skipping its own op-reth compile) and
+# DEVSTACK_L2EL_KIND=op-reth selects that backend. RUST_JIT_BUILD=1 lets any other
+# Rust harness binary (e.g. kona-host) build on demand; the path override is
+# checked first, so arkiv-node is never replaced by an upstream op-reth build.
+# Run `just harness-build-deps` once first. Defaults to the base smoke test.
+harness-run *test='-run TestRPCConnectivity ./op-acceptance-tests/tests/base/':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p arkiv-node --release
+    cd "{{ justfile_directory() }}/ThirdParty/optimism"
+    RUST_BINARY_PATH_OP_RETH="{{ justfile_directory() }}/target/release/arkiv-node" \
+    DEVSTACK_L2EL_KIND=op-reth \
+    RUST_JIT_BUILD=1 \
+        mise exec -- go test -count=1 -timeout 30m {{ test }}

@@ -1500,6 +1500,7 @@ dependencies = [
  "revm",
  "revm-precompile",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-chrome",

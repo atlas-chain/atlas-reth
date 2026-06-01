@@ -56,3 +56,4 @@ tracing.workspace = true
 # state-root / sealing / tokio noise.
 tracing-chrome = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_json.workspace = true

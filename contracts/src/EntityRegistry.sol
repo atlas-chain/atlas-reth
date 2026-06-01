@@ -77,6 +77,20 @@ library Entity {
     error TransferToZeroAddress(bytes32 entityKey);
     error TransferToSelf(bytes32 entityKey);
     error EntityNotExpired(bytes32 entityKey, BlockNumber32 expiresAt);
+
+    /// @dev An attribute value carries non-canonical bytes for its
+    /// declared `valueType`. For fixed-width types (`ATTR_UINT`,
+    /// `ATTR_ENTITY_KEY`) the SDK packs into `value[0]` only and the
+    /// remaining words must be zero; `wordIndex` is the 1-based index
+    /// of the first offending word.
+    error AttributeValueMalformed(bytes32 name, uint8 valueType, uint256 wordIndex);
+
+    /// @dev An `ATTR_STRING` value has an embedded null byte: a
+    /// non-zero byte was found after a zero byte within the 128-byte
+    /// value buffer. `position` is the index of the offending non-zero
+    /// byte (0..127) and `value` is the byte itself. Mirrors
+    /// `Ident32InvalidByte`'s shape.
+    error AttributeStringInvalidByte(bytes32 name, uint256 position, bytes1 value);
 }
 
 /// @title IEntityRegistry

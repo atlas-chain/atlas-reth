@@ -8,7 +8,7 @@ use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use arkiv_entitydb::query::{Page, PageParams, execute};
-use arkiv_entitydb::{EntityRlp, all_entities};
+use arkiv_entitydb::{ATTR_ENTITY_KEY, ATTR_STRING, ATTR_UINT, EntityRlp, all_entities};
 use async_trait::async_trait;
 use eyre::Result;
 use jsonrpsee::core::RpcResult;
@@ -132,21 +132,23 @@ pub struct EntityData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation_index_in_transaction: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub string_attributes: Vec<StringAttribute>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub numeric_attributes: Vec<NumericAttribute>,
+    pub attributes: Vec<Attribute>,
 }
 
+/// Discriminated attribute on the wire. `value`'s encoding depends on
+/// `value_type`:
+///   - `ATTR_UINT` → decimal U256 string (e.g. `"42"`).
+///   - `ATTR_STRING` → UTF-8 string.
+///   - `ATTR_ENTITY_KEY` → `0x`-prefixed hex of the 32-byte key.
+///
+/// Mirrors the create/update request shape so the SDK uses one type
+/// for both directions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StringAttribute {
+#[serde(rename_all = "camelCase")]
+pub struct Attribute {
     pub key: String,
+    pub value_type: u8,
     pub value: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NumericAttribute {
-    pub key: String,
-    pub value: U256,
 }
 
 /// Response shape for `arkiv_getBlockTiming`. Snake_case wire field
@@ -328,23 +330,13 @@ impl ResolvedIncludeData {
 }
 
 fn entity_data_from(e: EntityRlp, inc: &ResolvedIncludeData) -> EntityData {
-    let string_attributes = if inc.attributes {
-        e.string_annotations
+    let attributes = if inc.attributes {
+        e.attributes
             .into_iter()
-            .map(|sa| StringAttribute {
-                key: String::from_utf8_lossy(&sa.key).into_owned(),
-                value: String::from_utf8_lossy(&sa.value).into_owned(),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let numeric_attributes = if inc.attributes {
-        e.numeric_annotations
-            .into_iter()
-            .map(|na| NumericAttribute {
-                key: String::from_utf8_lossy(&na.key).into_owned(),
-                value: na.value,
+            .map(|a| Attribute {
+                key: String::from_utf8_lossy(&a.key).into_owned(),
+                value_type: a.value_type,
+                value: format_attribute_value(a.value_type, &a.value),
             })
             .collect()
     } else {
@@ -367,8 +359,16 @@ fn entity_data_from(e: EntityRlp, inc: &ResolvedIncludeData) -> EntityData {
         // Not yet tracked through the precompile path — see field doc.
         transaction_index_in_block: inc.transaction_index_in_block.then_some(0),
         operation_index_in_transaction: inc.operation_index_in_transaction.then_some(0),
-        string_attributes,
-        numeric_attributes,
+        attributes,
+    }
+}
+
+fn format_attribute_value(value_type: u8, bytes: &[u8]) -> String {
+    match value_type {
+        ATTR_UINT => U256::from_be_slice(bytes).to_string(),
+        ATTR_STRING => String::from_utf8_lossy(bytes).into_owned(),
+        ATTR_ENTITY_KEY => alloy_primitives::hex::encode_prefixed(bytes),
+        _ => String::new(),
     }
 }
 
@@ -457,4 +457,56 @@ fn parse_cursor(s: Option<&str>) -> Result<Option<u64>> {
 
 fn internal_err(msg: String) -> ErrorObjectOwned {
     ErrorObject::owned(INTERNAL_ERROR_CODE, msg, None::<()>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_uint_value_is_decimal_string() {
+        // 32-byte big-endian for U256(123456789). SDK reads as decimal.
+        let bytes = U256::from(123_456_789u64).to_be_bytes::<32>();
+        assert_eq!(
+            format_attribute_value(ATTR_UINT, &bytes),
+            "123456789".to_string()
+        );
+    }
+
+    #[test]
+    fn format_string_value_is_utf8() {
+        assert_eq!(
+            format_attribute_value(ATTR_STRING, b"hello world"),
+            "hello world".to_string()
+        );
+    }
+
+    #[test]
+    fn format_entity_key_value_is_prefixed_hex() {
+        // 32 raw bytes — must be emitted as 0x + 64 hex chars,
+        // including any trailing zeros.
+        let mut k = [0u8; 32];
+        k[0] = 0xab;
+        k[1] = 0xcd;
+        assert_eq!(
+            format_attribute_value(ATTR_ENTITY_KEY, &k),
+            "0xabcd000000000000000000000000000000000000000000000000000000000000".to_string(),
+        );
+    }
+
+    #[test]
+    fn attribute_serializes_with_camel_case_value_type() {
+        // The wire shape must mirror the create/update request:
+        // `key`, `valueType`, `value`. The SDK matches on `valueType`.
+        let attr = Attribute {
+            key: "score".to_string(),
+            value_type: ATTR_UINT,
+            value: "42".to_string(),
+        };
+        let json = serde_json::to_value(&attr).expect("serialize");
+        assert_eq!(json["key"], "score");
+        assert_eq!(json["valueType"], 1);
+        assert_eq!(json["value"], "42");
+        assert!(json.get("value_type").is_none(), "snake_case leaked");
+    }
 }

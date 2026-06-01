@@ -10,7 +10,8 @@ use alloy_primitives::{Address, B256, U256};
 use arkiv_entitydb::query::parse;
 use arkiv_entitydb::test_utils::{InMemoryStateAdapter, InMemoryStateDb};
 use arkiv_entitydb::{
-    NumericAnnotation, StringAnnotation, create, delete, resolve_id, transfer, update,
+    ATTR_ENTITY_KEY, ATTR_STRING, ATTR_UINT, Attribute, create, delete, resolve_id, transfer,
+    update,
 };
 
 fn alice() -> Address {
@@ -56,7 +57,6 @@ fn create_simple(
         10,
         b"payload".to_vec(),
         content_type.to_vec(),
-        vec![],
         vec![],
     )
     .expect("create");
@@ -113,11 +113,11 @@ fn equality_user_string_annotation() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![StringAnnotation {
+        vec![Attribute {
             key: b"tag".to_vec(),
+            value_type: ATTR_STRING,
             value: b"music".to_vec(),
         }],
-        vec![],
     )
     .expect("create");
     create(
@@ -128,11 +128,11 @@ fn equality_user_string_annotation() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![StringAnnotation {
+        vec![Attribute {
             key: b"tag".to_vec(),
+            value_type: ATTR_STRING,
             value: b"video".to_vec(),
         }],
-        vec![],
     )
     .expect("create");
     assert_eq!(ids(&mut s, r#"tag = "music""#), vec![0]);
@@ -150,10 +150,10 @@ fn equality_user_numeric_annotation() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"score".to_vec(),
-            value: U256::from(42),
+            value_type: ATTR_UINT,
+            value: U256::from(42).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -165,14 +165,86 @@ fn equality_user_numeric_annotation() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"score".to_vec(),
-            value: U256::from(7),
+            value_type: ATTR_UINT,
+            value: U256::from(7).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
     assert_eq!(ids(&mut s, "score = 42"), vec![0]);
+}
+
+#[test]
+fn equality_user_entity_key_annotation() {
+    let mut db = fresh();
+    let mut s = InMemoryStateAdapter::new(&mut db);
+    let ref_a = key_n(0xaa);
+    let ref_b = key_n(0xbb);
+    create(
+        &mut s,
+        alice(),
+        key_n(1),
+        100,
+        10,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![Attribute {
+            key: b"ref".to_vec(),
+            value_type: ATTR_ENTITY_KEY,
+            value: ref_a.as_slice().to_vec(),
+        }],
+    )
+    .expect("create");
+    create(
+        &mut s,
+        alice(),
+        key_n(2),
+        100,
+        10,
+        b"".to_vec(),
+        b"text/plain".to_vec(),
+        vec![Attribute {
+            key: b"ref".to_vec(),
+            value_type: ATTR_ENTITY_KEY,
+            value: ref_b.as_slice().to_vec(),
+        }],
+    )
+    .expect("create");
+    let q = format!("ref = 0x{}", hex_lower(ref_a.as_slice()));
+    assert_eq!(ids(&mut s, &q), vec![0]);
+}
+
+#[test]
+fn inclusion_user_entity_key_annotation() {
+    let mut db = fresh();
+    let mut s = InMemoryStateAdapter::new(&mut db);
+    let ref_a = key_n(0xaa);
+    let ref_b = key_n(0xbb);
+    let ref_c = key_n(0xcc);
+    for (i, r) in [(1u8, ref_a), (2, ref_b), (3, ref_c)] {
+        create(
+            &mut s,
+            alice(),
+            key_n(i),
+            100,
+            10,
+            b"".to_vec(),
+            b"text/plain".to_vec(),
+            vec![Attribute {
+                key: b"ref".to_vec(),
+                value_type: ATTR_ENTITY_KEY,
+                value: r.as_slice().to_vec(),
+            }],
+        )
+        .expect("create");
+    }
+    let q = format!(
+        "ref IN (0x{} 0x{})",
+        hex_lower(ref_a.as_slice()),
+        hex_lower(ref_c.as_slice())
+    );
+    assert_eq!(ids(&mut s, &q), vec![0, 2]);
 }
 
 #[test]
@@ -319,10 +391,10 @@ fn create_with_price(state: &mut InMemoryStateAdapter, owner: Address, key: B256
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(price),
+            value_type: ATTR_UINT,
+            value: U256::from(price).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -373,10 +445,10 @@ fn range_and_equality_combined() {
         10,
         b"".to_vec(),
         b"image/png".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(20),
+            value_type: ATTR_UINT,
+            value: U256::from(20).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -389,10 +461,10 @@ fn range_and_equality_combined() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(20),
+            value_type: ATTR_UINT,
+            value: U256::from(20).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -405,10 +477,10 @@ fn range_and_equality_combined() {
         10,
         b"".to_vec(),
         b"image/png".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(5),
+            value_type: ATTR_UINT,
+            value: U256::from(5).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -450,10 +522,10 @@ fn update_moves_index_value() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(100),
+            value_type: ATTR_UINT,
+            value: U256::from(100).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -463,10 +535,10 @@ fn update_moves_index_value() {
         20,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(200),
+            value_type: ATTR_UINT,
+            value: U256::from(200).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("update");
@@ -486,10 +558,10 @@ fn delete_removes_index_entry() {
         10,
         b"".to_vec(),
         b"text/plain".to_vec(),
-        vec![],
-        vec![NumericAnnotation {
+        vec![Attribute {
             key: b"price".to_vec(),
-            value: U256::from(42),
+            value_type: ATTR_UINT,
+            value: U256::from(42).to_be_bytes::<32>().to_vec(),
         }],
     )
     .expect("create");
@@ -515,10 +587,10 @@ fn range_historical_query() {
             1,
             b"".to_vec(),
             b"text/plain".to_vec(),
-            vec![],
-            vec![NumericAnnotation {
+            vec![Attribute {
                 key: b"price".to_vec(),
-                value: U256::from(100),
+                value_type: ATTR_UINT,
+                value: U256::from(100).to_be_bytes::<32>().to_vec(),
             }],
         )
         .expect("create");
@@ -533,10 +605,10 @@ fn range_historical_query() {
             2,
             b"".to_vec(),
             b"text/plain".to_vec(),
-            vec![],
-            vec![NumericAnnotation {
+            vec![Attribute {
                 key: b"price".to_vec(),
-                value: U256::from(200),
+                value_type: ATTR_UINT,
+                value: U256::from(200).to_be_bytes::<32>().to_vec(),
             }],
         )
         .expect("update");

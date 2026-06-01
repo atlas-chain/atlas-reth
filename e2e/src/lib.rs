@@ -82,9 +82,9 @@ pub const OP_TRANSFER: u8 = 4;
 pub const OP_DELETE: u8 = 5;
 pub const OP_EXPIRE: u8 = 6;
 
-const ATTR_UINT: u8 = 1;
-const ATTR_STRING: u8 = 2;
-const ATTR_ENTITY_KEY: u8 = 3;
+pub const ATTR_UINT: u8 = 1;
+pub const ATTR_STRING: u8 = 2;
+pub const ATTR_ENTITY_KEY: u8 = 3;
 
 // ── Op builders ──────────────────────────────────────────────────────
 

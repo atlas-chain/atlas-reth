@@ -26,26 +26,11 @@
 //! pure narrative + assertions.
 
 use alloy_primitives::{Address, B256};
-use arkiv_e2e::{CreateOp, OP_UPDATE, Operation, UpdateOp, WorldOps, boot};
+use arkiv_e2e::{
+    ATTR_ENTITY_KEY, ATTR_STRING, ATTR_UINT, CreateOp, OP_UPDATE, Operation, UpdateOp, WorldOps,
+    boot,
+};
 use arkiv_node::rpc::EntityData;
-
-/// Hex-encode without `0x` prefix — matches the wire format the SDK
-/// + storage-service use for query string literals.
-fn hex_addr(a: Address) -> String {
-    let mut s = String::with_capacity(40);
-    for b in a.as_slice() {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
-}
-
-fn hex_key(k: B256) -> String {
-    let mut s = String::with_capacity(64);
-    for b in k.as_slice() {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
-}
 
 fn ids_owned_by(results: &[EntityData], owner: Address) -> Vec<B256> {
     results
@@ -116,7 +101,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     // ── 2. Query built-ins ──────────────────────────────────────────
 
     let alice_owned = world
-        .query(&format!("$owner = 0x{}", hex_addr(alice)))
+        .query(&format!("$owner = {:#x}", alice))
         .await?;
     assert_eq!(ids_owned_by(&alice_owned, alice), vec![alice_key]);
 
@@ -125,13 +110,13 @@ async fn full_pipeline() -> eyre::Result<()> {
     assert_eq!(html[0].key, bob_key);
 
     let bob_created = world
-        .query(&format!("$creator = 0x{}", hex_addr(bob)))
+        .query(&format!("$creator = {:#x}", bob))
         .await?;
     assert_eq!(bob_created.len(), 1);
     assert_eq!(bob_created[0].key, bob_key);
 
     let by_key = world
-        .query(&format!("$key = 0x{}", hex_key(alice_key)))
+        .query(&format!("$key = {:#x}", alice_key))
         .await?;
     assert_eq!(by_key.len(), 1);
     assert_eq!(by_key[0].key, alice_key);
@@ -144,6 +129,53 @@ async fn full_pipeline() -> eyre::Result<()> {
     let score_42 = world.query("score = 42").await?;
     assert_eq!(score_42.len(), 1);
     assert_eq!(score_42[0].key, alice_key);
+
+    // Attribute wire-shape round-trip — discriminator survives through
+    // storage + RPC, and per-type serialization matches the SDK contract
+    // (UINT → decimal string, STRING → UTF-8, ENTITY_KEY → `0x` + 64
+    // hex chars).
+    let carol_entity = music
+        .iter()
+        .find(|e| e.key == carol_key)
+        .expect("carol in tag=music results");
+    assert_eq!(carol_entity.attributes.len(), 2);
+
+    let tag_attr = carol_entity
+        .attributes
+        .iter()
+        .find(|a| a.key == "tag")
+        .expect("tag attr on carol");
+    assert_eq!(tag_attr.value_type, ATTR_STRING);
+    assert_eq!(tag_attr.value, "music");
+
+    let ref_attr = carol_entity
+        .attributes
+        .iter()
+        .find(|a| a.key == "ref")
+        .expect("ref attr on carol");
+    assert_eq!(ref_attr.value_type, ATTR_ENTITY_KEY);
+    assert_eq!(ref_attr.value, format!("{:#x}", alice_key));
+
+    // Query by a user-defined ENTITY_KEY attribute as a predicate (not
+    // just the built-in `$key`): carol is the only entity whose `ref`
+    // points at alice.
+    let by_ref = world
+        .query(&format!("ref = {:#x}", alice_key))
+        .await?;
+    assert_eq!(by_ref.len(), 1);
+    assert_eq!(by_ref[0].key, carol_key);
+
+    let alice_entity = music
+        .iter()
+        .find(|e| e.key == alice_key)
+        .expect("alice in tag=music results");
+    let score_attr = alice_entity
+        .attributes
+        .iter()
+        .find(|a| a.key == "score")
+        .expect("score attr on alice");
+    assert_eq!(score_attr.value_type, ATTR_UINT);
+    assert_eq!(score_attr.value, "42");
 
     // ── 4. Boolean combinators ──────────────────────────────────────
 
@@ -160,8 +192,8 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     // Nested parens — `(a || b) && c`
     let q = format!(
-        r#"(tag = "music" || tag = "news") && $owner = 0x{}"#,
-        hex_addr(alice),
+        r#"(tag = "music" || tag = "news") && $owner = {:#x}"#,
+        alice,
     );
     assert_eq!(world.query(&q).await?.len(), 1, "alice has tag=music");
 
@@ -218,7 +250,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     // ── 7. EXTEND ───────────────────────────────────────────────────
 
     let bob_entity = world
-        .query(&format!("$key = 0x{}", hex_key(bob_key)))
+        .query(&format!("$key = {:#x}", bob_key))
         .await?;
     let old_expiration = bob_entity[0]
         .expires_at
@@ -226,7 +258,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     world.extend(1, bob_key, 5_000).await?;
 
     let bob_entity = world
-        .query(&format!("$key = 0x{}", hex_key(bob_key)))
+        .query(&format!("$key = {:#x}", bob_key))
         .await?;
     let new_expiration = bob_entity[0]
         .expires_at
@@ -257,7 +289,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     world.transfer(0, alice_key, carol).await?;
 
     let alice_owned = world
-        .query(&format!("$owner = 0x{}", hex_addr(alice)))
+        .query(&format!("$owner = {:#x}", alice))
         .await?;
     assert!(
         alice_owned.is_empty(),
@@ -265,15 +297,15 @@ async fn full_pipeline() -> eyre::Result<()> {
         alice_owned.iter().map(|e| e.key).collect::<Vec<_>>()
     );
     let carol_owned = world
-        .query(&format!("$owner = 0x{}", hex_addr(carol)))
+        .query(&format!("$owner = {:#x}", carol))
         .await?;
     let carol_keys: Vec<B256> = carol_owned.iter().map(|e| e.key).collect();
     assert!(carol_keys.contains(&alice_key));
     assert!(carol_keys.contains(&carol_key));
 
-    // Negative: alice (the old owner) tries to UPDATE — must revert
-    // at the contract level (status=0x0). The contract enforces
-    // owner check before reaching the precompile.
+    // Negative: alice (the old owner) tries to UPDATE — the precompile
+    // enforces the owner check and reverts with the `NotOwner` selector,
+    // surfacing as status=0x0 to the caller.
     let bad_update = Operation {
         operationType: OP_UPDATE,
         entityKey: alice_key,
@@ -294,7 +326,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     world.delete(1, bob_key).await?;
 
     let bob_gone = world
-        .query(&format!("$key = 0x{}", hex_key(bob_key)))
+        .query(&format!("$key = {:#x}", bob_key))
         .await?;
     assert!(
         bob_gone.is_empty(),
@@ -305,7 +337,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     assert!(by_news.is_empty(), "bob's tag=news bitmap should be empty");
 
     let by_owner_bob = world
-        .query(&format!("$owner = 0x{}", hex_addr(bob)))
+        .query(&format!("$owner = {:#x}", bob))
         .await?;
     assert!(by_owner_bob.is_empty(), "$owner=bob bitmap should be empty");
 
@@ -317,7 +349,7 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     let historical = world
         .query_at(
-            &format!("$owner = 0x{}", hex_addr(alice)),
+            &format!("$owner = {:#x}", alice),
             block_before_transfer,
         )
         .await?;

@@ -131,7 +131,7 @@ jobs:
           fi
 
   build:
-    needs: [checks, setup]
+    needs: [setup]
     if: github.event_name != 'pull_request'
     strategy:
       matrix: ${{ fromJson(needs.setup.outputs.arch_matrix) }}

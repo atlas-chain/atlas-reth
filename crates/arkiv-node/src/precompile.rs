@@ -539,7 +539,11 @@ fn validate_ident32(raw: B256) -> Result<(), ApplyError> {
         if b == 0 {
             seen_zero = true;
         } else {
-            let charset = if position == 0 { IDENT_LEADING } else { IDENT_CHARSET };
+            let charset = if position == 0 {
+                IDENT_LEADING
+            } else {
+                IDENT_CHARSET
+            };
             let charset_bad = (b as u128) > 127 || (charset >> b) & 1 == 0;
             if seen_zero || charset_bad {
                 return Err(ApplyError::Revert(
@@ -766,12 +770,7 @@ fn ident32_to_bytes(name: B256) -> Vec<u8> {
 // `validate_ident32`'s null check, scaled to 128 bytes.
 fn reject_embedded_null_in_string(a: &Attribute) -> Result<(), ApplyError> {
     let mut seen_zero = false;
-    for (position, b) in a
-        .value
-        .iter()
-        .flat_map(|w| w.as_slice().iter())
-        .enumerate()
-    {
+    for (position, b) in a.value.iter().flat_map(|w| w.as_slice().iter()).enumerate() {
         if *b == 0 {
             seen_zero = true;
         } else if seen_zero {

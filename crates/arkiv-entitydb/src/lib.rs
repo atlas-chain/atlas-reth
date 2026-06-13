@@ -613,8 +613,20 @@ pub fn transfer<S: StateAdapter>(
     let entity_id = read_entity_id(state, entity_addr)?;
     let mut entity = read_entity(state, entity_addr)?;
 
-    remove_from_indexes(state, ANNOT_OWNER, &encode_address(entity.owner), entity_id, false)?;
-    insert_into_indexes(state, ANNOT_OWNER, &encode_address(new_owner), entity_id, false)?;
+    remove_from_indexes(
+        state,
+        ANNOT_OWNER,
+        &encode_address(entity.owner),
+        entity_id,
+        false,
+    )?;
+    insert_into_indexes(
+        state,
+        ANNOT_OWNER,
+        &encode_address(new_owner),
+        entity_id,
+        false,
+    )?;
 
     entity.owner = new_owner;
     entity.last_modified_at_block = current_block;
@@ -724,19 +736,47 @@ fn built_in_annotations(
 ) -> Vec<Annotation> {
     vec![
         // Singleton — only one value, no ordered iteration.
-        Annotation { key: ANNOT_ALL.to_vec(), value: Vec::new(), tier2: false },
+        Annotation {
+            key: ANNOT_ALL.to_vec(),
+            value: Vec::new(),
+            tier2: false,
+        },
         // 20-byte address, random distribution.
-        Annotation { key: ANNOT_CREATOR.to_vec(), value: encode_address(creator), tier2: false },
+        Annotation {
+            key: ANNOT_CREATOR.to_vec(),
+            value: encode_address(creator),
+            tier2: false,
+        },
         // Numeric range scans are real use cases.
-        Annotation { key: ANNOT_CREATED_AT_BLOCK.to_vec(), value: encode_u64_be(created_at_block), tier2: true },
+        Annotation {
+            key: ANNOT_CREATED_AT_BLOCK.to_vec(),
+            value: encode_u64_be(created_at_block),
+            tier2: true,
+        },
         // 20-byte address, random distribution.
-        Annotation { key: ANNOT_OWNER.to_vec(), value: encode_address(owner), tier2: false },
+        Annotation {
+            key: ANNOT_OWNER.to_vec(),
+            value: encode_address(owner),
+            tier2: false,
+        },
         // 32-byte entity hash, random distribution.
-        Annotation { key: ANNOT_KEY.to_vec(), value: encode_b256(entity_key), tier2: false },
+        Annotation {
+            key: ANNOT_KEY.to_vec(),
+            value: encode_b256(entity_key),
+            tier2: false,
+        },
         // Numeric range scans are real use cases.
-        Annotation { key: ANNOT_EXPIRATION.to_vec(), value: encode_u64_be(expires_at), tier2: true },
+        Annotation {
+            key: ANNOT_EXPIRATION.to_vec(),
+            value: encode_u64_be(expires_at),
+            tier2: true,
+        },
         // Glob / prefix scans (e.g. `~ "video/*"`) are real use cases.
-        Annotation { key: ANNOT_CONTENT_TYPE.to_vec(), value: content_type.to_vec(), tier2: true },
+        Annotation {
+            key: ANNOT_CONTENT_TYPE.to_vec(),
+            value: content_type.to_vec(),
+            tier2: true,
+        },
     ]
 }
 
@@ -751,9 +791,7 @@ fn built_in_annotations(
 /// `ATTR_ENTITY_KEY`). The `value_type` discriminator itself is not
 /// part of the on-chain index key/value bytes — it is only consulted
 /// here to set the tier-2 flag.
-fn user_annotations<'a>(
-    attributes: &'a [Attribute],
-) -> impl Iterator<Item = Annotation> + 'a {
+fn user_annotations<'a>(attributes: &'a [Attribute]) -> impl Iterator<Item = Annotation> + 'a {
     attributes.iter().map(|a| Annotation {
         key: a.key.clone(),
         value: a.value.clone(),
@@ -1195,17 +1233,7 @@ mod tests {
         let key = entity_key_n(1);
         {
             let mut state = InMemoryStateAdapter::new(&mut db);
-            create(
-                &mut state,
-                alice(),
-                key,
-                100,
-                10,
-                vec![],
-                vec![],
-                vec![],
-            )
-            .unwrap();
+            create(&mut state, alice(), key, 100, 10, vec![], vec![], vec![]).unwrap();
             transfer(&mut state, key, 20, bob()).unwrap();
         }
         assert!(!read_bitmap(&db, ANNOT_OWNER, alice().as_slice()).contains(0));
@@ -1223,17 +1251,7 @@ mod tests {
         let key = entity_key_n(2);
         {
             let mut state = InMemoryStateAdapter::new(&mut db);
-            create(
-                &mut state,
-                alice(),
-                key,
-                100,
-                10,
-                vec![],
-                vec![],
-                vec![],
-            )
-            .unwrap();
+            create(&mut state, alice(), key, 100, 10, vec![], vec![], vec![]).unwrap();
             extend(&mut state, key, 20, 500).unwrap();
         }
         assert!(!read_bitmap(&db, ANNOT_EXPIRATION, &100u64.to_be_bytes()).contains(0));

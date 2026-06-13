@@ -100,24 +100,18 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     // ── 2. Query built-ins ──────────────────────────────────────────
 
-    let alice_owned = world
-        .query(&format!("$owner = {:#x}", alice))
-        .await?;
+    let alice_owned = world.query(&format!("$owner = {:#x}", alice)).await?;
     assert_eq!(ids_owned_by(&alice_owned, alice), vec![alice_key]);
 
     let html = world.query(r#"$contentType = "text/html""#).await?;
     assert_eq!(html.len(), 1);
     assert_eq!(html[0].key, bob_key);
 
-    let bob_created = world
-        .query(&format!("$creator = {:#x}", bob))
-        .await?;
+    let bob_created = world.query(&format!("$creator = {:#x}", bob)).await?;
     assert_eq!(bob_created.len(), 1);
     assert_eq!(bob_created[0].key, bob_key);
 
-    let by_key = world
-        .query(&format!("$key = {:#x}", alice_key))
-        .await?;
+    let by_key = world.query(&format!("$key = {:#x}", alice_key)).await?;
     assert_eq!(by_key.len(), 1);
     assert_eq!(by_key[0].key, alice_key);
 
@@ -159,9 +153,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     // Query by a user-defined ENTITY_KEY attribute as a predicate (not
     // just the built-in `$key`): carol is the only entity whose `ref`
     // points at alice.
-    let by_ref = world
-        .query(&format!("ref = {:#x}", alice_key))
-        .await?;
+    let by_ref = world.query(&format!("ref = {:#x}", alice_key)).await?;
     assert_eq!(by_ref.len(), 1);
     assert_eq!(by_ref[0].key, carol_key);
 
@@ -249,17 +241,13 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     // ── 7. EXTEND ───────────────────────────────────────────────────
 
-    let bob_entity = world
-        .query(&format!("$key = {:#x}", bob_key))
-        .await?;
+    let bob_entity = world.query(&format!("$key = {:#x}", bob_key)).await?;
     let old_expiration = bob_entity[0]
         .expires_at
         .expect("expires_at included by default");
     world.extend(1, bob_key, 5_000).await?;
 
-    let bob_entity = world
-        .query(&format!("$key = {:#x}", bob_key))
-        .await?;
+    let bob_entity = world.query(&format!("$key = {:#x}", bob_key)).await?;
     let new_expiration = bob_entity[0]
         .expires_at
         .expect("expires_at included by default");
@@ -288,17 +276,13 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     world.transfer(0, alice_key, carol).await?;
 
-    let alice_owned = world
-        .query(&format!("$owner = {:#x}", alice))
-        .await?;
+    let alice_owned = world.query(&format!("$owner = {:#x}", alice)).await?;
     assert!(
         alice_owned.is_empty(),
         "alice no longer owns anything: {:?}",
         alice_owned.iter().map(|e| e.key).collect::<Vec<_>>()
     );
-    let carol_owned = world
-        .query(&format!("$owner = {:#x}", carol))
-        .await?;
+    let carol_owned = world.query(&format!("$owner = {:#x}", carol)).await?;
     let carol_keys: Vec<B256> = carol_owned.iter().map(|e| e.key).collect();
     assert!(carol_keys.contains(&alice_key));
     assert!(carol_keys.contains(&carol_key));
@@ -325,9 +309,7 @@ async fn full_pipeline() -> eyre::Result<()> {
 
     world.delete(1, bob_key).await?;
 
-    let bob_gone = world
-        .query(&format!("$key = {:#x}", bob_key))
-        .await?;
+    let bob_gone = world.query(&format!("$key = {:#x}", bob_key)).await?;
     assert!(
         bob_gone.is_empty(),
         "bob's entity should be gone from $key bitmap"
@@ -336,9 +318,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     let by_news = world.query(r#"tag = "news""#).await?;
     assert!(by_news.is_empty(), "bob's tag=news bitmap should be empty");
 
-    let by_owner_bob = world
-        .query(&format!("$owner = {:#x}", bob))
-        .await?;
+    let by_owner_bob = world.query(&format!("$owner = {:#x}", bob)).await?;
     assert!(by_owner_bob.is_empty(), "$owner=bob bitmap should be empty");
 
     // ── 10. Historical query (atBlock) ──────────────────────────────
@@ -348,10 +328,7 @@ async fn full_pipeline() -> eyre::Result<()> {
     // carol.
 
     let historical = world
-        .query_at(
-            &format!("$owner = {:#x}", alice),
-            block_before_transfer,
-        )
+        .query_at(&format!("$owner = {:#x}", alice), block_before_transfer)
         .await?;
     assert_eq!(
         historical.len(),

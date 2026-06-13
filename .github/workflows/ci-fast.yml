@@ -93,7 +93,6 @@ jobs:
         run: just e2e-tests
 
   build:
-    needs: [checks]
     runs-on: op-reth-builder
 
     steps:

@@ -39,7 +39,7 @@ struct Cli {
     #[arg(long, default_value = "2s", value_parser = humantime::parse_duration)]
     block_time: Duration,
 
-    /// Gas price in wei. OP dev nodes require an explicit gas price.
+    /// Gas price in wei.
     #[arg(long, default_value = "1000000000")]
     gas_price: u128,
 
@@ -176,12 +176,9 @@ enum Command {
         file: PathBuf,
     },
 
-    /// Splice the EntityRegistry predeploy into a geth-format genesis JSON.
+    /// Splice Arkiv dev-funded accounts into a geth-format genesis JSON.
     ///
-    /// Reads `chainId` from the input, runs the contract creation bytecode
-    /// against that chain ID (so the EIP-712 cached domain separator
-    /// matches), and inserts the resulting runtime bytecode at the canonical
-    /// predeploy address. Designed for post-processing op-deployer output.
+    /// Legacy command name; no bytecode is deployed at `ARKIV_ADDRESS`.
     InjectPredeploy {
         /// Input genesis JSON (geth format).
         file: PathBuf,
@@ -636,14 +633,13 @@ fn resolve_payload(payload: Option<&str>, size: Option<usize>) -> Result<Bytes> 
     }
 }
 
-/// Splice the Arkiv predeploy and prefunded dev accounts into a geth-format
-/// genesis JSON.
+/// Splice Arkiv's prefunded dev accounts into a geth-format genesis JSON.
 ///
-/// Merges [`arkiv_genesis::genesis_alloc`] into the alloc:
-///   - the Arkiv predeploy at `0x44…0044` (nonce=1, no code) — this is
-///     both the SDK target and the precompile's state account,
-///   - the [`arkiv_genesis::ARKIV_DEV_ACCOUNT_COUNT`] mnemonic-derived
-///     dev accounts, each prefunded with [`arkiv_genesis::arkiv_dev_balance_wei`].
+/// Merges [`arkiv_genesis::genesis_alloc`] into the alloc: the
+/// [`arkiv_genesis::ARKIV_DEV_ACCOUNT_COUNT`] mnemonic-derived dev
+/// accounts, each prefunded with [`arkiv_genesis::arkiv_dev_balance_wei`].
+/// The command name is legacy; no bytecode is deployed at
+/// [`arkiv_genesis::ARKIV_ADDRESS`].
 ///
 /// Output is pretty-printed back to disk (overwriting the input by
 /// default, or to `out` if specified).

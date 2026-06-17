@@ -1,4 +1,4 @@
-//! Direct revm profile of N CREATE ops via `ArkivOpEvmFactory::create_evm`.
+//! Direct revm profile of N CREATE ops via `ArkivEthEvmFactory::create_evm`.
 //! Single thread, no tokio, no block production, no RPC.
 //!
 //! The chrome trace contains only the per-tx workload — setup runs
@@ -12,12 +12,10 @@ mod common;
 use std::time::{Duration, Instant};
 
 use alloy_evm::Evm;
-use alloy_op_evm::OpTx;
 use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_sol_types::SolCall;
 use arkiv_genesis::ARKIV_ADDRESS;
 use eyre::Result;
-use op_revm::{OpTransaction, transaction::deposit::DepositTransactionParts};
 use revm::DatabaseCommit;
 use revm::context::TxEnv;
 use revm::context::result::ResultAndState;
@@ -62,9 +60,9 @@ fn profile_create_op_direct() -> Result<()> {
     Ok(())
 }
 
-/// Caller-as-recovered OpTx for one CREATE targeting EntityRegistry.
+/// Caller-as-recovered TxEnv for one CREATE targeting EntityRegistry.
 /// Skips signature recovery — `caller` is taken as authoritative.
-fn build_create_tx(sender: Address, idx: u64) -> OpTx {
+fn build_create_tx(sender: Address, idx: u64) -> TxEnv {
     let calldata = executeCall {
         ops: vec![Operation {
             operationType: OP_CREATE,
@@ -78,7 +76,7 @@ fn build_create_tx(sender: Address, idx: u64) -> OpTx {
     }
     .abi_encode();
 
-    let tx_env = TxEnv {
+    TxEnv {
         caller: sender,
         gas_limit: 1_500_000,
         gas_price: 0,
@@ -88,11 +86,5 @@ fn build_create_tx(sender: Address, idx: u64) -> OpTx {
         nonce: idx,
         chain_id: Some(1), // matches CfgEnv::new_with_spec default
         ..Default::default()
-    };
-
-    OpTx(OpTransaction {
-        base: tx_env,
-        enveloped_tx: Some(vec![0u8].into()),
-        deposit: DepositTransactionParts::default(),
-    })
+    }
 }

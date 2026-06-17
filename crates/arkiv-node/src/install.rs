@@ -1,14 +1,13 @@
-//! Installation of Arkiv extensions onto an op-stack node builder.
+//! Installation of Arkiv extensions onto a reth node builder.
 //!
 //! Registers the `arkiv_*` JSON-RPC namespace on the node's HTTP RPC
-//! server. The custom `EvmFactory` (precompile, predeploys) is wired
-//! separately via [`crate::ArkivOpNode`] passed to `builder.node(...)`.
+//! server. The custom `EvmFactory` (precompile registration) is wired
+//! separately by replacing the node's executor builder.
 
 use reth_node_builder::{
-    FullNodeTypes, NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder, NodeTypes,
+    FullNodeTypes, NodeAdapter, NodeBuilderWithComponents, NodeComponentsBuilder,
     WithLaunchContext, rpc::RethRpcAddOns,
 };
-use reth_optimism_primitives::OpPrimitives;
 
 use crate::rpc::{ArkivApiServer, ArkivRpc};
 
@@ -18,7 +17,6 @@ pub fn install<T, CB, AO>(
 ) -> WithLaunchContext<NodeBuilderWithComponents<T, CB, AO>>
 where
     T: FullNodeTypes,
-    T::Types: NodeTypes<Primitives = OpPrimitives>,
     CB: NodeComponentsBuilder<T>,
     AO: RethRpcAddOns<NodeAdapter<T, CB::Components>>,
 {

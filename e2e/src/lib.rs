@@ -1,8 +1,8 @@
-//! Shared bootstrap + helpers for the `arkiv-op-reth` e2e tests.
+//! Shared bootstrap + helpers for the `arkiv-reth` e2e tests.
 //!
-//! Boots an `ArkivOpNode` with the `arkiv_*` JSON-RPC namespace
-//! installed, derives signers from the dev mnemonic, and exposes
-//! op-builder methods (`create` / `update` / `extend` / `transfer` /
+//! Boots an `EthereumNode` with the Arkiv precompile and `arkiv_*`
+//! JSON-RPC namespace installed, derives signers from the dev mnemonic, and exposes
+//! operation-builder methods (`create` / `update` / `extend` / `transfer` /
 //! `delete`) that submit a tx, advance a block, assert the receipt
 //! status, and bump nonces.
 //!
@@ -27,26 +27,25 @@ use std::time::Duration;
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B64, B256, Bytes, FixedBytes, TxKind, U256, hex, keccak256};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256, keccak256};
 use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, sol};
 use arkiv_genesis::{ARKIV_ADDRESS, dev_signers};
 use arkiv_node::rpc::{EntityData, QueryResponse};
-use arkiv_node::{ArkivOpNode, install};
+use arkiv_node::{ArkivEthExecutorBuilder, install};
 use eyre::{Result, bail, eyre};
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
-use reth_chainspec::EthereumHardforks;
+use reth_chainspec::{ChainSpec, EthereumHardforks};
 use reth_e2e_test_utils::{node::NodeTestContext, transaction::TransactionTestContext};
+use reth_ethereum_primitives::EthPrimitives;
 use reth_network_api::test_utils::PeersHandleProvider;
 use reth_node_api::{BlockTy, FullNodeComponents, NodeTypes, PayloadTypes};
 use reth_node_builder::{NodeBuilder, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
-use reth_optimism_chainspec::OpChainSpecBuilder;
-use reth_optimism_node::payload::{OpPayloadAttributes, OpPayloadAttrs};
-use reth_optimism_primitives::OpPrimitives;
+use reth_node_ethereum::{EthereumAddOns, EthereumNode};
 use reth_provider::BlockReader;
 use reth_rpc_eth_api::helpers::{EthApiSpec, EthTransactions, TraceExt};
 
@@ -188,12 +187,12 @@ pub const SIGNER_COUNT: usize = 5;
 /// Default per-tx gas cap for op submissions.
 const DEFAULT_GAS: u64 = 1_500_000;
 
-/// Match op-reth e2e fixtures.
+/// Match the dev funding helper's gas-price assumptions.
 const GAS_PRICE: u128 = 20_000_000_000;
 
-/// Boot an `ArkivOpNode` with the `arkiv_*` namespace installed,
-/// derive [`SIGNER_COUNT`] dev signers, and return a ready-to-drive
-/// [`World`].
+/// Boot an `EthereumNode` with the Arkiv precompile and `arkiv_*`
+/// namespace installed, derive [`SIGNER_COUNT`] dev signers, and return
+/// a ready-to-drive [`World`].
 ///
 /// The return type is a concrete `World<Node, AddOns>` whose generic
 /// parameters are inferred at the call site — tests just write
@@ -207,26 +206,25 @@ pub async fn boot() -> Result<impl impl_world_alias::ArkivWorld> {
     for (addr, account) in arkiv_genesis::genesis_alloc()? {
         genesis.alloc.insert(addr, account);
     }
-    let chain_spec = OpChainSpecBuilder::base_mainnet()
-        .genesis(genesis)
-        .isthmus_activated()
-        .build();
+    let chain_spec = ChainSpec::from_genesis(genesis);
     let chain_id = chain_spec.chain.id();
 
     let runtime = Runtime::test();
     let node_config = NodeConfig::test()
-        .map_chain(chain_spec)
+        .with_chain(chain_spec)
         .with_rpc(RpcServerArgs::default().with_http().with_unused_ports());
 
     let builder = NodeBuilder::new(node_config)
         .testing_node(runtime)
-        .node(ArkivOpNode::default());
+        .with_types::<EthereumNode>()
+        .with_components(EthereumNode::components().executor(ArkivEthExecutorBuilder))
+        .with_add_ons(EthereumAddOns::default());
     let NodeHandle {
         node,
         node_exit_future: _,
     } = install(builder).launch().await?;
 
-    let node = NodeTestContext::new(node, payload_attrs_with_l1_info_deposit).await?;
+    let node = NodeTestContext::new(node, eth_payload_attributes).await?;
 
     let signers = dev_signers(SIGNER_COUNT)?;
     Ok(World {
@@ -275,13 +273,13 @@ impl<Node, Payload, AddOns> WorldOps for World<Node, AddOns>
 where
     Node: FullNodeComponents<
             Types: NodeTypes<
-                Primitives = OpPrimitives,
+                Primitives = EthPrimitives,
                 ChainSpec: EthereumHardforks,
                 Payload = Payload,
             >,
             Network: PeersHandleProvider,
         >,
-    Payload: PayloadTypes<PayloadAttributes = OpPayloadAttrs>,
+    Payload: PayloadTypes<PayloadAttributes = PayloadAttributes>,
     AddOns: RethRpcAddOns<
             Node,
             EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
@@ -435,13 +433,13 @@ impl<Node, Payload, AddOns> World<Node, AddOns>
 where
     Node: FullNodeComponents<
             Types: NodeTypes<
-                Primitives = OpPrimitives,
+                Primitives = EthPrimitives,
                 ChainSpec: EthereumHardforks,
                 Payload = Payload,
             >,
             Network: PeersHandleProvider,
         >,
-    Payload: PayloadTypes<PayloadAttributes = OpPayloadAttrs>,
+    Payload: PayloadTypes<PayloadAttributes = PayloadAttributes>,
     AddOns: RethRpcAddOns<
             Node,
             EthApi: EthApiSpec<Provider: BlockReader<Block = BlockTy<Node::Types>>>
@@ -612,29 +610,15 @@ fn compute_entity_key(chain_id: u64, arkiv_addr: Address, sender: Address, nonce
     keccak256(&buf)
 }
 
-// ── Payload attrs (L1-info deposit forced as tx[0]) ──────────────────
+// ── Payload attrs ────────────────────────────────────────────────────
 
-/// Canonical ecotone L1-info deposit tx — see precompile_e2e history.
-/// Forced as transaction[0] of every payload so op-reth's payload
-/// builder produces a valid block.
-const L1_INFO_DEPOSIT_TX: [u8; 251] = hex!(
-    "7ef8f8a0683079df94aa5b9cf86687d739a60a9b4f0835e520ec4d664e2e415dca17a6df94deaddeaddeaddeaddeaddeaddeaddeaddead00019442000000000000000000000000000000000000158080830f424080b8a4440a5e200000146b000f79c500000000000000040000000066d052e700000000013ad8a3000000000000000000000000000000000000000000000000000000003ef1278700000000000000000000000000000000000000000000000000000000000000012fdf87b89884a61e74b322bbcf60386f543bfae7827725efaaf0ab1de2294a590000000000000000000000006887246668a3b87f54deb3b94ba47a6f63f32985"
-);
-
-pub fn payload_attrs_with_l1_info_deposit(timestamp: u64) -> OpPayloadAttrs {
-    OpPayloadAttrs(OpPayloadAttributes {
-        payload_attributes: PayloadAttributes {
-            timestamp,
-            prev_randao: B256::ZERO,
-            suggested_fee_recipient: Address::ZERO,
-            withdrawals: Some(vec![]),
-            parent_beacon_block_root: Some(B256::ZERO),
-            slot_number: None,
-        },
-        transactions: Some(vec![L1_INFO_DEPOSIT_TX.into()]),
-        no_tx_pool: None,
-        gas_limit: Some(30_000_000),
-        eip_1559_params: Some(B64::ZERO),
-        min_base_fee: Some(0),
-    })
+pub const fn eth_payload_attributes(timestamp: u64) -> PayloadAttributes {
+    PayloadAttributes {
+        timestamp,
+        prev_randao: B256::ZERO,
+        suggested_fee_recipient: Address::ZERO,
+        withdrawals: Some(vec![]),
+        parent_beacon_block_root: Some(B256::ZERO),
+        slot_number: None,
+    }
 }

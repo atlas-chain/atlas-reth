@@ -1,14 +1,14 @@
-# Arkiv on op-reth: Overview
+# Arkiv on Reth: Overview
 
-`arkiv-op-reth` builds on [op-reth](https://github.com/ethereum-optimism/optimism)
-to turn an OP-stack L2/L3 node into an **Arkiv** node by adding two
-things:
+`arkiv-node` builds on upstream [reth](https://github.com/paradigmxyz/reth)
+to turn a regular Ethereum execution node into an **Arkiv** node by
+adding two things:
 
-1. A custom op-reth `EvmFactory` that registers an **Arkiv precompile**
+1. A custom Ethereum `EvmFactory` that registers an **Arkiv precompile**
    at `ARKIV_ADDRESS` (`0x4400000000000000000000000000000000000044`)
    into `PrecompilesMap` for every revm context (canonical execution,
-   payload-building, simulation, validation, tracing). EOAs and SDKs
-   `CALL` this address with the `execute(Operation[])` /
+   payload-building, simulation, validation, tracing). EOAs, contracts,
+   and SDKs `CALL` this address with the `execute(Operation[])` /
    `nonces(address)` ABI declared by
    [`IEntityRegistry`](../contracts/src/EntityRegistry.sol).
 2. An `arkiv_*` JSON-RPC namespace on the node's standard transports.
@@ -18,15 +18,16 @@ The precompile owns per-op validation (ownership, expiration,
 and dispatch into `arkiv-entitydb`.
 
 Every entity, every annotation index, and every counter lives inside
-op-reth's standard world-state trie, committed in the L3 `stateRoot`.
-Reads are served by the `arkiv_*` namespace backed entirely by local
-state. No external indexer process, no JSON-RPC bridge, no ExEx, no
-out-of-trie state.
+reth's standard world-state trie, committed in `stateRoot`. Reads are
+served by the `arkiv_*` namespace backed entirely by local state. No
+external indexer process, no JSON-RPC bridge, no ExEx, no out-of-trie
+state.
 
-The binary is a **drop-in op-reth**: any valid OP-stack chainspec
-works. The custom `EvmFactory` installs the Arkiv precompile, the
-`arkiv_*` RPC namespace exposes the read path, and the system account
-is created on the first write.
+The binary is a **reth Ethereum node with an Arkiv executor**. Any
+valid geth-format Ethereum genesis that reth can parse works. The
+custom `EvmFactory` installs the Arkiv precompile, the `arkiv_*` RPC
+namespace exposes the read path, and the system account is created on
+the first write.
 
 ---
 
@@ -38,7 +39,7 @@ is created on the first write.
                   │                                                                                  │
                   │   ┌──────────────────────────────────────┐                                       │
    user tx ──────►│   │ revm                                 │                                       │
-                  │   │   ArkivOpEvmFactory installs the     │                                       │
+                  │   │   ArkivEthEvmFactory installs the    │                                       │
                   │   │   ArkivPrecompile at ARKIV_ADDR;     │    ┌──────────────────────────────┐   │
                   │   │   precompile dispatches ops ─────────┼───►│ arkiv-entitydb               │   │
                   │   └──────────────────────────────────────┘    │                              │   │

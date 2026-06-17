@@ -17,6 +17,6 @@ codegen against.
 forge build
 ```
 
-Produces `out/EntityRegistry.sol/EntityRegistry.json`. Nothing in
-`arkiv-op-reth` reads the build output — `arkiv-genesis` does not
-bake contract bytecode into the binary.
+Produces `out/EntityRegistry.sol/EntityRegistry.json`. Nothing in the
+Arkiv node reads the build output — `arkiv-genesis` does not bake
+contract bytecode into the binary.

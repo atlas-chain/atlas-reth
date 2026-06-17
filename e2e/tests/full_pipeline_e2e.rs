@@ -1,6 +1,6 @@
 //! End-to-end narrative test exercising the whole Arkiv stack.
 //!
-//! Boots an `ArkivOpNode` once, then walks through a story:
+//! Boots an Arkiv-enabled `EthereumNode` once, then walks through a story:
 //!
 //! 1. CREATE — three signers, varied payloads, content types, and
 //!    attribute mixes (strings, numerics, entity-key refs).

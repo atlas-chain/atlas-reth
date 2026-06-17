@@ -8,21 +8,19 @@ authors = ["Arkiv Contributors <dev@arkiv.network>"]
 edition = "2024"
 rust-version = "1.94"
 license = "GPL-3.0-or-later"
-description = "Workspace for Arkiv Op-Reth integration"
+description = "Workspace for Arkiv reth integration"
 repository = "https://github.com/Arkiv-Network/arkiv-op-reth"
 readme = "README.md"
-keywords = ["ethereum", "reth", "optimism", "arkiv"]
+keywords = ["ethereum", "reth", "arkiv"]
 
 [workspace.dependencies]
-# Op-Reth (from ethereum-optimism monorepo, pinned to op-reth/v2.2.5)
-reth-optimism-node = { git = "https://github.com/ethereum-optimism/optimism.git", tag = "op-reth/v2.2.5" }
-reth-optimism-cli = { git = "https://github.com/ethereum-optimism/optimism.git", tag = "op-reth/v2.2.5" }
-reth-optimism-chainspec = { git = "https://github.com/ethereum-optimism/optimism.git", tag = "op-reth/v2.2.5" }
-reth-optimism-primitives = { git = "https://github.com/ethereum-optimism/optimism.git", tag = "op-reth/v2.2.5" }
-
-# Reth (pinned to same rev as op-reth/v2.2.5)
+# Reth (pinned)
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
 reth-primitives-traits = "0.3"
@@ -71,9 +69,6 @@ alloy-rpc-types-eth = "2.0"
 revm = { version = "38", default-features = false, features = ["std"] }
 revm-precompile = { version = "34", default-features = false, features = ["std"] }
 alloy-evm = { version = "0.34", default-features = false, features = ["std"] }
-alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism.git", tag = "op-reth/v2.2.5", default-features = false, features = ["std"] }
-op-alloy-consensus = { git = "https://github.com/ethereum-optimism/optimism.git", tag = "op-reth/v2.2.5", default-features = false, features = ["std"] }
-op-revm = { git = "https://github.com/ethereum-optimism/optimism.git", tag = "op-reth/v2.2.5", default-features = false, features = ["std"] }
 
 # Roaring bitmaps — pure-Rust impl. RoaringTreemap (64-bit) serialization
 # is byte-deterministic for a given set (sorted-key BTreeMap container
@@ -104,4 +99,3 @@ opt-level = 1
 inherits = "release"
 lto = "fat"
 codegen-units = 1
-

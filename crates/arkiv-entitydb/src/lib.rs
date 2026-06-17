@@ -1,6 +1,6 @@
 //! Canonical home of the Arkiv state model.
 //!
-//! Every entity and every annotation bitmap lives in op-reth's standard
+//! Every entity and every annotation bitmap lives in reth's standard
 //! world-state trie as an Ethereum account:
 //!
 //! - **Entity account** at `entity_address(entityKey)` carries the

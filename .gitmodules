@@ -1,3 +1,0 @@
-[submodule "ThirdParty/optimism"]
-	path = ThirdParty/optimism
-	url = https://github.com/ethereum-optimism/optimism.git

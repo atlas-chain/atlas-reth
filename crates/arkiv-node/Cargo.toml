@@ -13,16 +13,16 @@ name = "arkiv-node"
 path = "src/main.rs"
 
 [dependencies]
-reth-optimism-node.workspace = true
-reth-optimism-cli.workspace = true
-reth-optimism-chainspec.workspace = true
-reth-optimism-primitives.workspace = true
-
 reth-node-api.workspace = true
 reth-node-builder.workspace = true
+reth-node-ethereum.workspace = true
+reth-ethereum-cli.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-evm-ethereum.workspace = true
 reth-evm.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
+reth-chainspec.workspace = true
 
 arkiv-genesis.workspace = true
 arkiv-entitydb.workspace = true
@@ -35,9 +35,6 @@ alloy-sol-types.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-evm.workspace = true
-alloy-op-evm.workspace = true
-op-alloy-consensus.workspace = true
-op-revm.workspace = true
 revm.workspace = true
 revm-precompile.workspace = true
 

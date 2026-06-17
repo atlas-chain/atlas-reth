@@ -1,4 +1,4 @@
-# Arkiv on op-reth: Engineering
+# Arkiv on Reth: Engineering
 
 This document covers how the codebase is organised, how to deploy a
 chain that runs Arkiv, what's tested where, the fault-proof story,
@@ -27,11 +27,11 @@ verification recipes see [`3_query.md`](3_query.md).
 crates/
   arkiv-node/         # binary + custom EvmFactory + Arkiv precompile + arkiv_* RPC
   arkiv-entitydb/     # state model + op handlers + system-state API + query language
-  arkiv-cli/          # operator CLI: entity ops, batches, simulate, inject-predeploy
+  arkiv-cli/          # operator CLI: entity ops, batches, simulate, dev-funding injection
   arkiv-genesis/      # shared lib: ARKIV_ADDRESS re-export + dev-funding alloc helpers
 e2e/                  # full-pipeline integration tests
 contracts/
-  src/EntityRegistry.sol    # IEntityRegistry interface — ABI surface for SDK codegen (no deployed bytecode)
+  src/EntityRegistry.sol    # IEntityRegistry interface - ABI surface for SDK codegen
 docs/
   1_overview.md       # high-level orientation
   2_state-model.md    # canonical state model
@@ -49,7 +49,7 @@ Pure library. Owns:
   hardhat-compatible dev mnemonic and the 100 pre-funded dev accounts
   derived from it.
 - `genesis_alloc()`, `dev_funding_alloc(...)` — assemble dev-funding
-  entries for splicing into a `Genesis.alloc`.
+  entries for splicing into a geth-format `Genesis.alloc`.
 
 The system account that hosts the precompile's consensus storage is
 materialised lazily by `arkiv-entitydb` on its first write — it does
@@ -70,61 +70,43 @@ runs against an abstract `StateAdapter` trait. Contains:
   writes) and `ReadOnlyStateAdapter` (RPC read path, against a
   `StateProvider` snapshot). The `test-utils` feature exposes
   `InMemoryStateAdapter` for unit tests.
-  `ensure_account_persists` bumps the account's nonce to ≥ 1 so
-  EIP-161 doesn't prune it at end-of-tx. Idempotent. Used by
-  `bump_nonce` to lazily materialise the system account on its first
-  storage write — no genesis allocation required.
 - **Op handlers.** `create` / `update` / `extend` / `transfer` /
-  `delete` / `expire`. All indexing logic (system counter, ID maps,
-  Tier-1 bitmap deltas and Tier-2 ART deltas across built-in and
-  user annotations, RLP encode/decode, tombstoning) lives here.
+  `delete` / `expire`. All indexing logic lives here.
 - **System-state API.** `read_nonce(state, caller) -> Result<u32>`
   and `bump_nonce(state, caller) -> Result<u32>` are the only public
-  accessors for the per-EOA nonce slot. The underlying `slot_*`
-  helpers (`slot_entity_count`, `slot_id_to_addr`, `slot_addr_to_id`,
-  `slot_nonces`) are `pub(crate)` — the system-account storage layout
-  is an entitydb implementation detail.
-- **Query language.** Lexer (hand-rolled), recursive-descent parser
-  producing a `Query` AST, tree-walking interpreter that runs against
-  a `StateAdapter` and returns a roaring64 `Bitmap` of matching
-  entity IDs. Plus a paginated `execute(state, query_str, params)`
-  convenience that resolves IDs to `EntityRlp` via the system-account
-  ID map.
+  accessors for the per-caller nonce slot. The underlying `slot_*`
+  helpers are `pub(crate)`.
+- **Query language.** Lexer, recursive-descent parser, AST, and
+  tree-walking interpreter.
 
 ### 1.3 `arkiv-node`
 
-The execution-client binary. A thin wrapper around
-`reth_optimism_cli::Cli`. Layout:
+The execution-client binary. It uses the upstream reth Ethereum CLI
+surface and composes `EthereumNode` with an Arkiv executor builder.
+Layout:
 
-- `evm.rs` — `ArkivOpEvmFactory` wrapping `OpEvmFactory<OpTx>`.
+- `evm.rs` — `ArkivEthEvmFactory` wrapping `EthEvmFactory`.
   Registers the Arkiv precompile at `ARKIV_ADDRESS` into
   `PrecompilesMap` in both `create_evm` and
   `create_evm_with_inspector` so simulation, tracing,
   payload-building, validation, and canonical execution all see the
-  same set. Also includes the local newtype around `OpEvmConfig`
-  (needed for the orphan-rule `ConfigureEngineEvm<OpExecData>` impl)
-  and the `ArkivOpNode` / `ArkivOpExecutorBuilder` layers that wire
-  it all together.
+  same set. `ArkivEthExecutorBuilder` builds
+  `EthEvmConfig::new_with_evm_factory(...)` for `EthereumNode`.
 - `precompile.rs` — caller restriction (direct CALL only;
   `DELEGATECALL`/`CALLCODE`/value-bearing rejected; `STATICCALL`
-  allowed for `nonces(address)` only), calldata decode (selector
-  dispatch between `execute(Operation[])` and `nonces(address)`),
-  per-op validation (ownership, expiration, `Ident32` charset),
-  Solidity-style revert encoding with the standard error selectors,
-  `EntityOperation` event emission, gas accounting (pure function of
-  op shape), `ReadWriteStateAdapter` over `EvmInternals`, op dispatch
-  into `arkiv-entitydb`.
+  allowed for `nonces(address)` only), calldata decode, per-op
+  validation, Solidity-style revert encoding, `EntityOperation`
+  event emission, deterministic gas accounting, and dispatch into
+  `arkiv-entitydb`.
 - `rpc.rs` — `arkiv_*` JSON-RPC namespace + wire-format types.
-  `ReadOnlyStateAdapter` wraps a `StateProvider` for read-only state. The
-  query handler is a thin shell over `arkiv_entitydb::query::execute`.
+  `ReadOnlyStateAdapter` wraps a `StateProvider` for read-only state.
 - `install.rs` — `extend_rpc_modules` hook registering the `arkiv_*`
   namespace.
-- `cli.rs` — `ArkivExt` clap args.
 
-There is **no chainspec mutation** and no Arkiv-specific chainspec
-gate. Any valid OP-stack chainspec works; the precompile is
-registered programmatically by the custom `EvmFactory`, and the
-system-account storage host is created on the first write.
+There is no chainspec mutation and no Arkiv-specific chainspec gate.
+Any valid geth-format Ethereum genesis that reth can parse works; the
+precompile is registered programmatically by the custom `EvmFactory`,
+and the system-account storage host is created on the first write.
 
 ### 1.4 `arkiv-cli`
 
@@ -135,14 +117,13 @@ Operator command-line tool. Two distinct surfaces:
 `balance`, `spam`, `batch`, `simulate`. All ops are submitted as
 `execute(Operation[])` calls to `ARKIV_ADDRESS` — the precompile
 decodes the calldata, validates, charges gas, mutates state, and
-emits the `EntityOperation` log. The CLI speaks the standard Solidity
-ABI; from the wire it's indistinguishable from a contract call.
+emits the `EntityOperation` log.
 
 **Genesis post-processing** (no network required):
 `arkiv-cli inject-predeploy <input.json>` reads a geth-format genesis
-and splices the dev-funded accounts into `alloc`. Composes with
-op-deployer output for production deployments. The system account is
-not injected — it's materialised lazily on the first op.
+and splices the dev-funded accounts into `alloc`. The command name is
+legacy; it does not deploy bytecode at `ARKIV_ADDRESS`. The system
+account is not injected — it is materialised lazily on the first op.
 
 The traffic simulator (`simulate`) rotates through mnemonic-derived
 signers, maintains an in-memory pool of alive entities, and submits a
@@ -152,93 +133,49 @@ weighted random mix of CRUD ops. State updates come from decoding
 ### 1.5 `e2e`
 
 End-to-end integration tests. Uses `reth-e2e-test-utils`'
-`NodeTestContext` to boot an `ArkivOpNode` in-process, then drives it
-via the `World` helper in `e2e/src/lib.rs` (signer pool, nonce
-tracking, ABI encoding, query plumbing). `tests/full_pipeline_e2e.rs`
-walks a single narrative through every op type and every query
-construct.
+`NodeTestContext` to boot an Arkiv-enabled `EthereumNode` in-process,
+then drives it via the `World` helper in `e2e/src/lib.rs` (signer
+pool, nonce tracking, ABI encoding, query plumbing).
+`tests/full_pipeline_e2e.rs` walks a single narrative through every
+op type and every query construct.
 
 ---
 
 ## 2. Genesis construction
 
-Genesis is the thorniest part of integrating with the OP stack. The
-current rules:
+The runtime chainspec is treated as read-only data flowing in from
+`--chain`. The Arkiv precompile and system account do not need genesis
+entries:
 
-### 2.1 No runtime mutation
+- `ARKIV_ADDRESS` has no bytecode in genesis. It is activated by
+  `ArkivEthEvmFactory`.
+- The entitydb system account is materialised lazily on first write by
+  `StateAdapter::ensure_account_persists`.
+- Dev funding is optional and is injected by `arkiv-cli
+  inject-predeploy` into a geth-format genesis `alloc`.
 
-The chainspec is treated as read-only data flowing in from `--chain`.
-Whatever needs to be in there must already be in there before
-`--chain` is parsed. This is what lets the binary be a true drop-in
-op-reth, and what keeps `op-reth init` and `op-reth node` in
-agreement on the genesis hash.
-
-### 2.2 Path-A chainspec
-
-OP-reth supports two paths to build an `OpChainSpec`: a **pure-JSON**
-path (hardforks in `config.{bedrockBlock, regolithTime, …}`,
-EIP-1559 params in `config.optimism`) and a **programmatic** path
-(forks attached in code via `LazyLock`).
-
-For an `--chain ./file.json` flow to work for both `init` and `node`,
-the chainspec **must** be the pure-JSON form. The programmatic form
-loads the JSON with no hardforks active, the engine produces
-post-hardfork blocks anyway, and validation explodes.
-
-`chainspec/dev.base.json` is therefore pure-JSON, with all OP
-hardforks activated at time 0.
-
-### 2.3 The Holocene `extraData` requirement
-
-After Holocene, EIP-1559 base-fee parameters are encoded in the
-previous block's `extraData` (9 bytes:
-`[version=0x00][denominator: u32 BE][elasticity: u32 BE]`). When
-block 1 is validated against genesis, the consensus path bails if
-`genesis.extra_data` isn't exactly 9 bytes.
-
-The decoder has a documented fallback: if both encoded values are
-zero, it falls back to the chainspec's
-`base_fee_params_at_timestamp`. So `extraData = 0x000000000000000000`
-(9 zero bytes) is the canonical "use chainspec params at block 0"
-value. `chainspec/dev.base.json` ships with this.
-
-### 2.4 The injection step
-
-`chainspec/dev.base.json` ships with an empty `alloc` — no system
-account, no funded accounts. Both are added via
-`arkiv-cli inject-predeploy` at recipe time:
+Local development uses `chainspec/dev.base.json`, which is a
+geth-format Ethereum genesis. The `just genesis` and `just node-dev`
+recipes copy that file, inject dev-funded accounts, then use the same
+JSON for `init` and `node` so the genesis hash matches.
 
 ```bash
 cp chainspec/dev.base.json $TMPDIR/genesis.json
 arkiv-cli inject-predeploy $TMPDIR/genesis.json
-op-reth init --chain $TMPDIR/genesis.json --datadir $TMPDIR
-op-reth node --chain $TMPDIR/genesis.json --datadir $TMPDIR …
+arkiv-node init --chain $TMPDIR/genesis.json --datadir $TMPDIR
+arkiv-node node --chain $TMPDIR/genesis.json --datadir $TMPDIR
 ```
 
-This composes with op-deployer output for production:
+For production, provide the chain's geth-format genesis directly:
 
 ```bash
-op-deployer apply --intent intent.toml --workdir ./ops
-arkiv-cli inject-predeploy ops/genesis.json
-op-reth init --chain ops/genesis.json --datadir ./data
-op-reth node --chain ops/genesis.json --datadir ./data
+arkiv-node init --chain genesis.json --datadir ./data
+arkiv-node node --chain genesis.json --datadir ./data
 ```
 
-`ARKIV_ADDRESS` itself gets no genesis entry — the precompile is
-registered programmatically by the custom `EvmFactory`.
-
-### 2.5 No system-account pre-allocation
-
-The system account that hosts the precompile's storage is *not*
-pre-allocated in genesis. `arkiv-entitydb` materialises it lazily on
-the first op (typically a CREATE): `bump_nonce` calls
-`StateAdapter::ensure_account_persists`, which bumps the system
-account's nonce to 1 the first time it's touched. EIP-161 sees the
-account as non-empty (nonce ≥ 1) and doesn't prune it at end-of-tx.
-The mechanism is idempotent — subsequent calls are no-ops.
-
-Net effect: no Arkiv-specific genesis entry is needed at all. The
-binary runs against any valid OP-stack chainspec.
+`arkiv-cli inject-predeploy genesis.json` remains useful when a dev or
+test deployment wants the known mnemonic accounts funded. It is not a
+required production step.
 
 ---
 
@@ -251,8 +188,8 @@ binary runs against any valid OP-stack chainspec.
 | Query lexer + parser unit tests | `crates/arkiv-entitydb/src/query/{lexer,parser}.rs`. |
 | Query interpreter integration | `crates/arkiv-entitydb/tests/query_eval.rs` — parse + evaluate end-to-end against `InMemoryStateAdapter`. |
 | Precompile unit tests | `crates/arkiv-node/src/precompile.rs` — ABI round-trip, gas constants, attribute conversion, `Ident32` validation. |
-| Direct-revm CREATE profile | `crates/arkiv-node/tests/profile_create_op_direct.rs` — chrome-trace per-tx workload via `ArkivOpEvmFactory::create_evm`. |
-| Full pipeline e2e | `e2e/tests/full_pipeline_e2e.rs` — boots an in-process `ArkivOpNode`, walks every op type + every query construct + atBlock + pagination + non-owner revert. |
+| Direct-revm CREATE profile | `crates/arkiv-node/tests/profile_create_op_direct.rs` — chrome-trace per-tx workload via `ArkivEthEvmFactory::create_evm`. |
+| Full pipeline e2e | `e2e/tests/full_pipeline_e2e.rs` — boots an in-process Arkiv-enabled `EthereumNode`, walks every op type + every query construct + atBlock + pagination + non-owner revert. |
 
 ---
 
@@ -260,23 +197,19 @@ binary runs against any valid OP-stack chainspec.
 
 | Decision | Why |
 |---|---|
-| Precompile target at `ARKIV_ADDRESS = 0x4400…0044` | Matches OP convention for system contract slots; the address is a property of the chain, not the binary. |
-| System account (entitydb-internal at `0x4400…0046`) | Hosts the precompile's consensus storage (counter, nonces, ID maps) on a dedicated empty-coded account. Splitting it from `ARKIV_ADDRESS` keeps the precompile target itself a pure programmatic-registration target (mirrors how standard precompiles like `ecrecover` work). `pub(crate)` in `arkiv-entitydb` — external code never sees the address. |
-| Lazy system-account materialisation | `arkiv-entitydb::bump_nonce` calls `StateAdapter::ensure_account_persists` on first touch, bumping the account's nonce to 1 so EIP-161 doesn't prune it. No genesis allocation, no chainspec dependency. |
-| Custom `EvmFactory` (not ExEx) | State mutation happens inside EVM execution; the result lands in `stateRoot` and inherits op-reth's standard reorg machinery for free. |
+| Precompile target at `ARKIV_ADDRESS = 0x4400…0044` | Stable public address for the native ABI surface; no bytecode is deployed there. |
+| System account (entitydb-internal at `0x4400…0046`) | Hosts consensus storage (counter, nonces, ID maps) on a dedicated empty-coded account. Splitting it from `ARKIV_ADDRESS` keeps the precompile target itself a pure programmatic-registration target. |
+| Lazy system-account materialisation | `arkiv-entitydb::bump_nonce` calls `StateAdapter::ensure_account_persists` on first touch, bumping the account's nonce to 1 so EIP-161 does not prune it. |
+| Custom `EvmFactory` (not ExEx) | State mutation happens inside EVM execution; the result lands in `stateRoot` and inherits reth's standard reorg machinery. |
 | Bitmap as account code (`codeHash` = `keccak256(bitmap)`) | Content-addressing in the trie comes for free; query verification is one `eth_getProof` per bitmap. |
 | ART as account code (`codeHash` = `keccak256(art_bytes)`) | Same content-addressing trick as bitmaps; range-query verification is one `eth_getProof` per index account. |
 | `0xFE` prefix on entity-account code | Defends against accidental `CALL` to an entity address; `INVALID` opcode reverts immediately. |
 | Entity tombstone keeps `nonce=1` | Prevents EIP-161 pruning of deleted entities. |
 | Gas is pure function of calldata | Consensus determinism by construction — same op batch from any pre-state charges the same gas. |
-| Owner / expiry / `Ident32` charset validated in the precompile | One validation surface; SDK clients depend on specific revert selectors (`NotOwner`, `Ident32InvalidByte`, …) which the precompile emits. |
-| Owner / `expires_at` live only in the entity RLP | Single source of truth — no separate contract-side mapping to keep in sync with the RLP. The precompile reads them from the RLP for both authorization and event emission. |
-| System-state slot layout is `pub(crate)` in entitydb | The storage layout is an entitydb implementation detail; external callers (the precompile, tests) go through `read_nonce` / `bump_nonce` and the op handlers. |
-| `arkiv-entitydb` has no revm dep | Reusable for testing (against `InMemoryStateAdapter`) and for the read path (against `ReadOnlyStateAdapter`); op handlers only talk to a `StateAdapter` trait. |
-| Path-A chainspec | `op-reth init` and `op-reth node` need to agree on genesis hash when reading the same JSON file. |
-| `inject-predeploy` as a separate post-process | Composes with op-deployer output rather than forking it; same tool serves dev and prod. |
-| `arkiv-genesis` as its own crate | Both binaries need the same constants; lifting them out avoids cross-bin deps. |
-| No runtime chainspec mutation | Removes the `init`/`node` genesis-hash divergence bug structurally. |
+| Owner / expiry / `Ident32` charset validated in the precompile | One validation surface; SDK clients depend on specific revert selectors. |
+| Ownership follows EVM `msg.sender` | Plain reth does not enforce EOA-only calls. Contracts can own and mutate entities through their own address unless a future chain rule forbids contract callers. |
+| `arkiv-entitydb` has no revm dep | Reusable for testing and read-only RPC evaluation; op handlers only talk to a `StateAdapter` trait. |
+| No runtime chainspec mutation | Keeps `init` and `node` in agreement on the genesis hash. |
 
 ---
 
@@ -284,24 +217,20 @@ binary runs against any valid OP-stack chainspec.
 
 - **Built-in `--chain arkiv` name.** Could be done via a custom
   `ChainSpecParser`. Not pursued; the file-based flow works and
-  composes uniformly with prod.
-- **Mainnet `L2Genesis.s.sol` integration.** Not needed — the system
-  account is materialised lazily, so there's nothing to register in
-  genesis.
-- **Arbitrary-pattern glob.** `~` accepts prefix patterns only —
-  mid-pattern wildcards and `?` would need a full ART scan rather
-  than `iter_prefix`. Not on the critical path.
+  composes uniformly with production genesis files.
+- **Normal deployed Solidity contract.** `EntityRegistry.sol` is an
+  interface for SDK codegen. The Rust precompile is the database
+  engine.
+- **EOA-only authorization.** Current semantics are normal EVM
+  `msg.sender` semantics. If Arkiv needs EOA-only ownership, that
+  should be enforced as a transaction validation or chain-rule change.
+- **Arbitrary-pattern glob.** `~` accepts prefix patterns only.
 - **Per-op tx-position metadata.** `transaction_index_in_block` and
   `operation_index_in_transaction` are kept in the wire shape for SDK
-  parity but always 0 — revm's precompile context doesn't expose
-  either.
-- **L1 / op-node / op-batcher / op-proposer.** Out of scope. This
-  repo is the L3 execution client only.
-- **Fault-proof EVM integration.** The expected path is `kona`
-  (Rust FP program) on `asterisc` (RISC-V VM), where
-  `arkiv-entitydb` and the Arkiv precompile compile in directly via
-  the shared reth crates. Wiring and end-to-end verification are
-  tracked as an investigation item; see §6.
+  parity but always 0.
+- **Fault-proof EVM integration.** The expected path is a Rust FP
+  program linking the same reth and Arkiv crates. Wiring and
+  end-to-end verification remain an investigation item; see §6.
 
 ---
 
@@ -312,28 +241,20 @@ creation, `SetCode`, `SetNonce`, `SetState`. These are standard
 Ethereum state transitions included in the `stateRoot`. Nothing the
 precompile writes is out-of-trie.
 
-The fault-proof path that composes with Arkiv is **`kona`** (Rust
-fault-proof program) on **`asterisc`** (RISC-V VM). Kona links
-against the same reth crates as the sequencer, so `arkiv-entitydb`
-and the Arkiv precompile land in the FP program by ordinary Rust
-linkage with no extra glue.
-
 The precompile is deterministic across nodes — gas formulas are pure
 functions of op shape, and trie writes are pure functions of
-`(op batch, prior trie state)` — so once the kona / asterisc path is
-wired up, sequencer, validator, and FP replays produce identical
+`(op batch, prior trie state)` — so any replay environment that links
+the same reth EVM stack and Arkiv precompile should produce identical
 state.
 
 What such an integration would cover:
 
-- Entity payload integrity: `codeHash` of entity account (which
-  commits to owner and expiry as RLP fields).
+- Entity payload integrity: `codeHash` of entity account.
 - Entity metadata: system-account ID maps and entity counter.
-- Per-EOA nonces: system-account `nonces` slot.
+- Per-caller nonces: system-account `nonces` slot.
 - Annotation index integrity (per-pair): `codeHash` of each pair
-  account (the bitmap content hash itself).
-- Range-index integrity (per-key): `codeHash` of each index account
-  (the ART content hash itself).
+  account.
+- Range-index integrity (per-key): `codeHash` of each index account.
 
 `eth_getProof` works against every Arkiv account exactly as for any
 Ethereum account.
@@ -342,45 +263,29 @@ Ethereum account.
 
 ## 7. Open questions
 
-1. **Op-reth `Bytecodes` retention.** Old bitmap-byte, entity-RLP-byte,
-   and ART-byte entries in op-reth's `Bytecodes` table are reachable
-   only via historical state roots. Op-reth's retention policy (full
-   archive, pruned, snapshot-only) determines how far back historical
-   queries can reach. Document the resulting window per node profile.
+1. **Bytecode retention.** Old bitmap-byte, entity-RLP-byte, and
+   ART-byte entries are reachable only via historical state roots.
+   The node's retention policy determines how far back historical
+   queries can reach.
 
-2. **First-sight overhead.** Every distinct `(k, v)` ever seen
+2. **Caller policy.** The migration intentionally adopts normal
+   `msg.sender` ownership semantics. Production may still want an
+   EOA-only rule or an explicit contract-caller policy.
+
+3. **First-sight overhead.** Every distinct `(k, v)` ever seen
    creates a pair account, and every distinct `k` ever seen creates
-   an index account. For chains with extreme annotation cardinality
-   (e.g., timestamps used as annotation values), this produces a lot
-   of accounts and the ART for the affected key grows linearly. Worth
-   modelling against realistic workloads — including the ART
-   serialised size at very high cardinality.
+   an index account.
 
-3. **ART gas calibration.** `G_ART_INDEXED_ANNOTATION = 6_000` is a
-   flat per-attribute charge that under-counts ENTITY_KEY user attrs
-   and built-in-key writes (`$owner` on Transfer, `$expiration` on
-   Extend, etc.). Both gaps are consensus-safe but should be
-   re-evaluated once realistic ART sizes are measured.
+4. **ART gas calibration.** `G_ART_INDEXED_ANNOTATION = 6_000` is a
+   flat per-attribute charge that should be re-evaluated once
+   realistic ART sizes are measured.
 
-4. **Arbitrary-pattern glob.** Today `~` accepts prefix patterns
-   (`"image/*"`) only. Mid-pattern wildcards and `?` would need an
-   evaluator that scans the full ART rather than calling
-   `iter_prefix`. Not on the critical path.
+5. **Arbitrary-pattern glob.** Mid-pattern wildcards and `?` would
+   need an evaluator that scans the full ART rather than calling
+   `iter_prefix`.
 
-5. **Fees.** Native gas vs. an ERC-20 surcharge enforced by the
-   precompile. Independent decision, can be deferred. The
-   precompile's gas model is unaffected either way.
+6. **Fees.** Native gas vs. an ERC-20 surcharge enforced by the
+   precompile. Independent decision, can be deferred.
 
-6. **Per-op tx-position metadata.** `transaction_index_in_block` and
-   `operation_index_in_transaction` are reported as 0 in
-   `arkiv_query` responses today — revm's precompile context doesn't
-   expose either. Plumbing them through would need a block-builder
-   side annotation.
-
-7. **Pair-account / index-account address collisions.**
-   `keccak256("arkiv.pair" || …)[:20]` and
-   `keccak256("arkiv.index" || …)[:20]` derivations could in
-   principle collide with an existing externally-owned account on the
-   L3. Genesis-time check + chain bring-up documentation is
-   sufficient. (The system account at its fixed address cannot
-   collide with derived addresses.)
+7. **Per-op tx-position metadata.** Plumbing real tx/operation
+   positions through would need a block-builder side annotation.

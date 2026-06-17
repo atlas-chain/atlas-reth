@@ -7,8 +7,9 @@
 //! - A convenience helper that builds the dev-funding `alloc`.
 //!
 //! Used by:
-//!   - `arkiv-cli inject-predeploy`: post-processing op-deployer output
-//!     to splice dev-funded accounts into a standard OP genesis JSON.
+//!   - `arkiv-cli inject-predeploy`: splices dev-funded accounts into a
+//!     geth-format genesis JSON. The command name is legacy; no bytecode
+//!     is deployed at [`ARKIV_ADDRESS`].
 
 // Re-export so consumers (e.g. `arkiv-cli inject-predeploy`) don't need to
 // take a direct dep on alloy-genesis.
@@ -51,9 +52,10 @@ pub fn arkiv_dev_balance_wei() -> U256 {
     U256::from(10_000u64) * U256::from(1_000_000_000_000_000_000u128)
 }
 
-/// Build the complete Arkiv dev alloc: the system account +
+/// Build the complete Arkiv dev funding alloc:
 /// [`ARKIV_DEV_ACCOUNT_COUNT`] mnemonic-derived accounts each prefunded
-/// with [`arkiv_dev_balance_wei`].
+/// with [`arkiv_dev_balance_wei`]. The Arkiv precompile and entitydb
+/// system account are not genesis accounts.
 pub fn genesis_alloc() -> Result<BTreeMap<Address, GenesisAccount>> {
     let mut alloc = BTreeMap::new();
     for (addr, acc) in dev_funding_alloc(ARKIV_DEV_ACCOUNT_COUNT, arkiv_dev_balance_wei())? {

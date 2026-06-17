@@ -1,7 +1,7 @@
 # Arkiv State Model
 
 This document is the canonical design spec for how Arkiv state is laid
-out in op-reth's world-state trie, and how the six entity ops mutate
+out in reth's world-state trie, and how the six entity ops mutate
 it. Read this if you're touching the precompile, the op handlers, or
 the gas model.
 
@@ -41,7 +41,7 @@ for crate-level engineering details see
 ## Abstract
 
 All Arkiv state used to serve entity reads and annotation queries
-lives in op-reth's world-state trie, committed in the L3 `stateRoot`.
+lives in reth's world-state trie, committed in `stateRoot`.
 
 **The fundamental building block is the same one Ethereum uses for
 smart-contract code: store arbitrary bytes in an account's `code`,
@@ -85,7 +85,7 @@ the system-account slot layout.
 
 ### Overview
 
-Two components inside `arkiv-op-reth`:
+Two components inside the Arkiv reth workspace:
 
 1. The **Arkiv precompile** — registered at `ARKIV_ADDRESS` by the
    custom `EvmFactory`. Per call: caller restrictions; selector
@@ -105,14 +105,14 @@ Two components inside `arkiv-op-reth`:
 Every state-dependent mutation that affects consensus — entity
 account writes, pair account writes (bitmaps), index account writes
 (serialised ART), system-account storage writes — flows through
-revm's journaled state and is committed in the L3 `stateRoot`.
+revm's journaled state and is committed in the block `stateRoot`.
 
 ### Reth Integration
 
-A single integration point on op-reth's standard extension surface:
+A single integration point on reth's standard extension surface:
 an Arkiv precompile registered into `PrecompilesMap` via a custom
-`EvmFactory` wrapping `OpEvmFactory<OpTx>`. The custom factory
-inserts the precompile in both `create_evm` and
+`EvmFactory` wrapping `EthEvmFactory`. The custom factory inserts
+the precompile in both `create_evm` and
 `create_evm_with_inspector` so simulation, tracing, payload-building,
 validation, and canonical execution all see the same set.
 
@@ -141,8 +141,10 @@ The user-facing entry point and the EVM-side adapter to
     the entity's stored owner (read from the entity RLP).
   - `Expire` — caller-agnostic; only requires `block.number > expiresAt`.
 
-  DB chains forbid user-deployed contracts and disable EIP-7702, so
-  `input.caller` is by construction the EOA that signed the tx.
+  On plain reth, `input.caller` is normal EVM `msg.sender`. A contract
+  caller owns and mutates entities through the contract's address unless
+  a future chain rule or transaction-validation rule forbids contract
+  callers.
 - **Gas accounting.** Computed from calldata only (§4). Charged
   up-front; halt `OutOfGas` if the budget doesn't cover the batch.
 - **Dispatch.** Wraps `EvmInternals` in a `ReadWriteStateAdapter`
@@ -253,7 +255,7 @@ Entity Account  (address = entityKey[:20])
   nonce    = 1                               // prevents EIP-161 empty-account deletion on tombstoning
   balance  = 0
   codeHash = keccak256(0xFE || RLP(entity))  // commits to full entity content in the trie
-  code     = 0xFE || RLP(entity)             // stored by op-reth in its Bytecodes table, keyed by codeHash
+  code     = 0xFE || RLP(entity)             // stored by reth in its Bytecodes table, keyed by codeHash
 
   storage slots: none
 ```
@@ -263,11 +265,12 @@ is the entirety of the entity's per-account trie footprint.
 
 #### codeHash and RLP Storage
 
-`codeHash` is set to `keccak256(0xFE || RLP(entity))`. Op-reth stores
+`codeHash` is set to `keccak256(0xFE || RLP(entity))`. Reth stores
 the corresponding bytes in its `Bytecodes` table keyed by `codeHash`,
 exactly as it does for contract bytecode. `eth_getCode(entity_address)`
 retrieves the full RLP; `eth_getProof(entity_address)` includes
-`codeHash` in the account node, verifiable against the L3 `stateRoot`.
+`codeHash` in the account node, verifiable against the block
+`stateRoot`.
 
 The `0xFE` prefix ensures that any EVM `CALL` to an entity address
 executes `INVALID` and reverts immediately. The RLP bytes are never
@@ -360,7 +363,7 @@ Pair Account  (address = keccak256("arkiv.pair" || key_bytes || 0x00 || val_byte
 
 On bitmap update, `SetCode` is called with the new bytes; `codeHash`
 updates automatically to the keccak hash of the new content. Old
-bitmap bytes remain in op-reth's `Bytecodes` table indefinitely,
+bitmap bytes remain in reth's `Bytecodes` table indefinitely,
 keyed by their old hash — historical bitmap versions stay retrievable
 via `eth_getCode(pair_address, blockN)` against any retained block.
 
@@ -673,8 +676,8 @@ Trie (committed in stateRoot):
     code                                                    → serialised ART bytes
     storage: (none)
 
-MDBX (op-reth's environment):
-  Standard op-reth tables only (Accounts, Storages, Bytecodes, ChangeSets, …).
+MDBX (reth's environment):
+  Standard reth tables only (Accounts, Storages, Bytecodes, ChangeSets, ...).
   No custom Arkiv tables.
 ```
 
@@ -695,5 +698,5 @@ MDBX (op-reth's environment):
 | Historical entity reads | Yes — trie versioning |
 | Historical equality / range queries | Yes — pair and index `codeHash` retained at all blocks |
 | External process required | No |
-| Reorg handling required | No — op-reth standard |
+| Reorg handling required | No — reth standard |
 | Gas model deterministic | Yes — pure function of op shape |

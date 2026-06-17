@@ -14,7 +14,7 @@ use alloy_evm::{EvmEnv, EvmFactory, revm::inspector::NoOpInspector};
 use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_sol_types::sol;
 use arkiv_genesis::{dev_signers, genesis_alloc};
-use arkiv_node::evm::{ArkivOpEvm, ArkivOpEvmFactory};
+use arkiv_node::evm::{ArkivEthEvm, ArkivEthEvmFactory};
 use eyre::Result;
 use revm::bytecode::Bytecode;
 use revm::database::{CacheDB, EmptyDB};
@@ -24,7 +24,7 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// Concrete type returned by [`boot_direct_evm`]. Spelled out so
 /// call sites don't have to thread generic bounds through.
-pub type DirectEvm = ArkivOpEvm<CacheDB<EmptyDB>, NoOpInspector>;
+pub type DirectEvm = ArkivEthEvm<CacheDB<EmptyDB>, NoOpInspector>;
 
 // Mirror of the `execute(Operation[])` ABI the precompile decodes
 // (see contracts/src/EntityRegistry.sol). Kept here so tests have no
@@ -52,7 +52,7 @@ sol! {
 }
 
 /// Build a fresh CacheDB-backed EVM with the Arkiv precompile installed
-/// (via `ArkivOpEvmFactory::create_evm`) and return it alongside the
+/// (via `ArkivEthEvmFactory::create_evm`) and return it alongside the
 /// address of dev signer 0 — the same address `world.address(0)`
 /// returns in the e2e harness.
 ///
@@ -80,8 +80,8 @@ pub fn boot_direct_evm() -> Result<(DirectEvm, Address)> {
         }
     }
 
-    let factory = ArkivOpEvmFactory::new();
-    let env = EvmEnv::default(); // OpSpecId default = JOVIAN; cfg.chain_id = 1
+    let factory = ArkivEthEvmFactory::new();
+    let env = EvmEnv::default(); // SpecId default with cfg.chain_id = 1
     let evm = factory.create_evm(db, env);
 
     let sender = dev_signers(1)?[0].address();

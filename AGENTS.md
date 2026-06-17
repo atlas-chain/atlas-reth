@@ -11,18 +11,18 @@ testing, and the fault-proof story are in
 
 ## What this repo is
 
-A drop-in [op-reth](https://github.com/ethereum-optimism/optimism)
-build for the **Arkiv** chain plus operator tooling. Arkiv = OP-stack
-L2/L3 with one extension to op-reth: a custom `EvmFactory` that
-registers the **Arkiv precompile** at `ARKIV_ADDRESS` (`0x4400…0044`)
-into revm's `PrecompilesMap`. EOAs and SDKs `CALL` that address with
-the `execute(Operation[])` / `nonces(address)` ABI declared by
+A [reth](https://github.com/paradigmxyz/reth) Ethereum node build for
+the **Arkiv** chain plus operator tooling. Arkiv adds one extension to
+reth: a custom `EvmFactory` that registers the **Arkiv precompile** at
+`ARKIV_ADDRESS` (`0x4400…0044`) into revm's `PrecompilesMap`. EOAs,
+contracts, and SDKs `CALL` that address with the `execute(Operation[])`
+/ `nonces(address)` ABI declared by
 `IEntityRegistry` (interface-only — there is no deployed contract).
 The precompile owns per-op validation (ownership, expiration,
 `Ident32` charset), `EntityOperation` event emission, gas accounting,
 and dispatch into `arkiv-entitydb`. Entity payloads, the annotation
 index (per-pair roaring64 bitmaps), the Tier-2 ART range index, and
-the global counter / nonces / ID maps all live in the L3 trie. No
+the global counter / nonces / ID maps all live in the state trie. No
 external indexer process, no out-of-trie state.
 
 One public address:
@@ -62,12 +62,12 @@ justfile                    # all dev recipes
 
 | Concern | File |
 |---|---|
-| Custom `EvmFactory` wrapping `OpEvmFactory<OpTx>` | `crates/arkiv-node/src/evm.rs` |
+| Custom `EvmFactory` wrapping `EthEvmFactory` | `crates/arkiv-node/src/evm.rs` |
 | Arkiv precompile (selector dispatch, validation, gas, op dispatch, event emission) | `crates/arkiv-node/src/precompile.rs` |
 | `arkiv_*` RPC namespace | `crates/arkiv-node/src/rpc.rs` |
 | `ReadWriteStateAdapter` + `ReadOnlyStateAdapter` (production `StateAdapter` impls) | `crates/arkiv-node/src/state_adapter.rs` |
 | RPC installation hook | `crates/arkiv-node/src/install.rs` |
-| CLI flags + node-builder wiring | `crates/arkiv-node/src/{cli,main}.rs` |
+| Node-builder wiring | `crates/arkiv-node/src/main.rs` |
 | Entity / pair / index layout, RLP, bitmap, ART | `crates/arkiv-entitydb/src/lib.rs` |
 | `StateAdapter` trait + `InMemoryStateAdapter` (test-utils feature) | `crates/arkiv-entitydb/src/lib.rs` |
 | Op handlers (`create` / `update` / `extend` / `transfer` / `delete` / `expire`) | `crates/arkiv-entitydb/src/lib.rs` |
@@ -119,13 +119,13 @@ cargo test -p arkiv-e2e --test full_pipeline_e2e   # full pipeline e2e
 
 - **Edition 2024**, MSRV `1.94`. Keep that in mind before reaching for
   nightly-only features.
-- **`reth-*` and `reth-optimism-*` are pinned to specific git revs** in
+- **`reth-*` and `reth-ethereum-*` are pinned to specific git revs** in
   the root `Cargo.toml`. Bumping them is a coordinated change; expect
   API drift to surface across the `EvmFactory` / precompile integration.
 - **The precompile is registered programmatically by `EvmFactory`** —
   no on-chain bytecode is deployed at `ARKIV_ADDRESS`, and no
   Arkiv-specific genesis allocation is required to run the binary.
-  The chainspec only needs to be a valid OP-stack chainspec; the
+  The chainspec only needs to be a valid geth-format Ethereum genesis; the
   system-account storage host is created on the first write.
 - **Lazy system-account materialisation.** `arkiv-entitydb`'s
   `StateAdapter` exposes `ensure_account_persists(addr)`. Called from
@@ -153,11 +153,11 @@ cargo test -p arkiv-e2e --test full_pipeline_e2e   # full pipeline e2e
   directly — to the rest of the workspace it's an entitydb
   implementation detail.
 - **Per-op authorization** lives in the precompile: CREATE is open to
-  any EOA; UPDATE / EXTEND / TRANSFER / DELETE require
+  any caller; UPDATE / EXTEND / TRANSFER / DELETE require
   `input.caller == stored owner`; EXPIRE is caller-agnostic but
-  requires `block.number > expiresAt`. DB chains forbid user-deployed
-  contracts and disable EIP-7702, so `input.caller` is by construction
-  the EOA that signed the tx.
+  requires `block.number > expiresAt`. On plain reth, `input.caller`
+  is normal EVM `msg.sender`; contract callers own and mutate entities
+  through the contract address unless a future chain rule forbids them.
 - **Query language scope.** Equality family (`=`, `!=`, `IN`,
   `NOT IN`, `&&`, `||`, `NOT`, `*` / `$all`), range (`<`, `>`, `<=`,
   `>=`), and prefix-glob (`~`, `!~`) are all implemented. Range and

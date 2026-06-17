@@ -41,7 +41,7 @@ e2e-tests:
 
 # ── Node ─────────────────────────────────────────────────────
 
-# Print an Arkiv dev genesis JSON to stdout (dev.base.json + injected predeploy)
+# Print an Arkiv dev genesis JSON to stdout (dev.base.json + dev funding)
 genesis:
     #!/usr/bin/env bash
     set -e
@@ -55,9 +55,8 @@ genesis:
 # Generates genesis -> init datadir -> launch node, all against the same
 # chainspec file so init/node agree on the genesis hash.
 #
-# v1 had three node-dev variants (--arkiv.debug / --arkiv.db-url / storaged).
-# Post-demolition there is just one: plain op-reth with the predeploy in
-# genesis. Phase 2+ will reintroduce the precompile + RPC.
+# The Arkiv precompile is registered by the node's EVM factory; the
+# genesis injection below only funds deterministic dev accounts.
 node-dev *args='':
     #!/usr/bin/env bash
     set -e
@@ -203,78 +202,3 @@ block-number:
 # fail until Phase 4 reintroduces a local-backed handler.
 block-timing:
     {{ arkiv_cli }} block-timing
-
-# ── Acceptance harness (ThirdParty/optimism, pinned to op-reth/v2.2.5) ──
-#
-# The OP Go acceptance-test harness (op-acceptance-tests + the in-process
-# op-devstack/sysgo) lives in the Optimism monorepo, vendored as a submodule.
-# op-acceptance-tests is part of the monorepo's single Go module and imports
-# across ~15 of its packages, so it can only be compiled with the whole tree
-# checked out — not in isolation.
-#
-# Compiling needs only Go — any host Go >= 1.24 (the go.mod floor). No mise.
-# Actually *running* the suite needs the full runtime build-deps (contracts,
-# cannon prestates, Rust binaries) via the monorepo's own mise-managed tooling —
-# see ThirdParty/optimism/docs/ai/acceptance-tests.md.
-
-# Fetch/checkout the OP monorepo submodule at the pinned commit
-harness-init:
-    git submodule update --init ThirdParty/optimism
-
-# Confirm the Go acceptance harness compiles at the matching tag (compiles every
-# test package + its cross-repo import closure, runs no tests).
-harness-check:
-    cd ThirdParty/optimism && go test -run 'a^' ./op-acceptance-tests/...
-
-# Build the runtime artifacts the harness needs that do NOT build just-in-time:
-# the OP contract bundle, the cannon fault-proof prestates (both required by the
-# Minimal preset's challenger, even for non-proof tests), and the flashblocks
-# builders (op-rbuilder + rollup-boost — pre-built here so the flashblocks suite
-# doesn't time out JIT-compiling them mid-test). One-time; re-runs are
-# incremental. Needs the mise toolchain — run `mise install` in
-# ThirdParty/optimism first. arkiv-node (op-reth) + kona-host are handled by
-# `harness-run` / `RUST_JIT_BUILD`, not here.
-harness-build-deps:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{ justfile_directory() }}/ThirdParty/optimism/packages/contracts-bedrock"
-    mise exec -- just install
-    mise exec -- just build-no-tests
-    cd "{{ justfile_directory() }}/ThirdParty/optimism"
-    mise exec -- just cannon-prestates
-    ( cd rust/op-rbuilder && mise exec -- cargo build -p op-rbuilder --bin op-rbuilder )
-    ( cd rust/rollup-boost && mise exec -- cargo build -p rollup-boost --bin rollup-boost )
-
-# Run an OP acceptance test with arkiv-node substituted as the L2 EL.
-# arkiv-node IS op-reth v2.2.5 + the Arkiv precompile, so op-devstack drives it
-# through the standard op-reth path: RUST_BINARY_PATH_OP_RETH points the harness'
-# rustbin resolver at our release build (skipping its own op-reth compile) and
-# DEVSTACK_L2EL_KIND=op-reth selects that backend. RUST_JIT_BUILD=1 lets any other
-# Rust harness binary (e.g. kona-host) build on demand; the path override is
-# checked first, so arkiv-node is never replaced by an upstream op-reth build.
-# Run `just harness-build-deps` once first. Defaults to the base smoke test.
-harness-run *test='-run TestRPCConnectivity ./op-acceptance-tests/tests/base/':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo build -p arkiv-node --release
-    cd "{{ justfile_directory() }}/ThirdParty/optimism"
-    RUST_BINARY_PATH_OP_RETH="{{ justfile_directory() }}/target/release/arkiv-node" \
-    DEVSTACK_L2EL_KIND=op-reth \
-    RUST_JIT_BUILD=1 \
-        mise exec -- go test -count=1 -timeout 30m {{ test }}
-
-# Run the whole op-acceptance-tests tree against arkiv-node as the L2 EL.
-# Each package spins a full multi-node devnet; running many in parallel exhausts
-# the host's ephemeral ports (op-node fails with "bind: can't assign requested
-# address"), so this defaults to low package-parallelism (`-p 2`) and serial
-# in-package execution (`-parallel 1`). Drop to `jobs=1` for the heaviest sync
-# suites. Run `just harness-build-deps` once first. Pass a narrower path to scope it.
-harness-suite jobs='2' tree='./op-acceptance-tests/tests/...':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo build -p arkiv-node --release
-    cd "{{ justfile_directory() }}/ThirdParty/optimism"
-    RUST_BINARY_PATH_OP_RETH="{{ justfile_directory() }}/target/release/arkiv-node" \
-    DEVSTACK_L2EL_KIND=op-reth \
-    RUST_JIT_BUILD=1 \
-        mise exec -- go test -count=1 -timeout 30m -p {{ jobs }} -parallel 1 {{ tree }}

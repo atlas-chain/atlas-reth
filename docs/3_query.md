@@ -36,7 +36,7 @@ The namespace registers on every transport the operator has enabled
 
 All queries are evaluated by reading the trie. Every read is a
 standard `eth_call` / `eth_getStorageAt` / `eth_getCode` against
-op-reth's `StateProvider`.
+reth's `StateProvider`.
 
 The query grammar (lexer + parser in
 `crates/arkiv-entitydb/src/query/`) and the tree-walking interpreter
@@ -151,7 +151,7 @@ and the combinators run at the bitmap layer.
 The RPC handler takes an optional `atBlock` (hex number) and routes
 to `provider.history_by_block_number(n)` instead of `provider.latest()`.
 The resulting `StateProvider` is read by `ReadOnlyStateAdapter` exactly
-as for the head state. Op-reth's `Bytecodes` table retains old bitmap
+as for the head state. Reth's `Bytecodes` table retains old bitmap
 bytes and old ART bytes keyed by hash, so equality and range queries
 at any retained block resolve cleanly.
 
@@ -218,6 +218,5 @@ Owner and expiry live in the entity RLP — the same single
 `eth_getCode` that anchors the payload also anchors ownership and
 lifetime. There is no separate contract-side mapping to prove against.
 
-The L3 `stateRoot` is anchored to L2 and ultimately L1 by the OP
-Stack. Each of the proofs above is a single-level proof against that
-root.
+Each of the proofs above is a single-level proof against the block's
+`stateRoot`.

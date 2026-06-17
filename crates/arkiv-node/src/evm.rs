@@ -11,7 +11,7 @@ use alloy_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Inspector,
-        context::{BlockEnv, CfgEnv, TxEnv, result::ResultAndState},
+        context::{BlockEnv, CfgEnv, DBErrorMarker, TxEnv, result::ResultAndState},
         context_interface::result::{EVMError, HaltReason},
         inspector::NoOpInspector,
         primitives::hardfork::SpecId,
@@ -53,7 +53,7 @@ impl EvmFactory for ArkivEthEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = ArkivEthEvm<DB, I>;
     type Context<DB: Database> = EthEvmContext<DB>;
     type Tx = TxEnv;
-    type Error<DBError: core::error::Error + Send + Sync + 'static> = EVMError<DBError>;
+    type Error<DBError: DBErrorMarker> = EVMError<DBError>;
     type HaltReason = HaltReason;
     type Spec = SpecId;
     type BlockEnv = BlockEnv;

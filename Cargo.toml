@@ -15,26 +15,26 @@ keywords = ["ethereum", "reth", "arkiv"]
 
 [workspace.dependencies]
 # Reth (pinned)
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
 reth-primitives-traits = "0.3"
 
 # Reth — test-only.
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "81c026181e96ef33a823f3ef4d2a28940e9fa4fe" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "9384bc53d8c0c77e59cac83fdaaf3b372c6d2216" }
 
 # Arkiv bindings (from arkiv-contracts repo)
 arkiv-bindings = { git = "https://github.com/Arkiv-Network/arkiv-contracts.git", rev = "d6ebe18" }
@@ -50,25 +50,25 @@ arkiv-entitydb = { path = "crates/arkiv-entitydb" }
 arkiv-node = { path = "crates/arkiv-node" }
 
 # Alloy
-alloy-primitives = { version = "1.5", features = ["rlp"] }
-alloy-consensus = "2.0"
-alloy-eips = "2.0"
-alloy-genesis = "2.0"
-alloy-hardforks = "0.4"
-alloy-sol-types = "1.5"
-alloy-provider = "2.0"
-alloy-signer-local = { version = "2.0", features = ["mnemonic"] }
-alloy-network = "2.0"
-alloy-contract = "2.0"
+alloy-primitives = { version = "=1.6.0", features = ["rlp"] }
+alloy-consensus = "=2.0.5"
+alloy-eips = "=2.0.5"
+alloy-genesis = "=2.0.5"
+alloy-hardforks = "=0.4.7"
+alloy-sol-types = "=1.6.0"
+alloy-provider = "=2.0.5"
+alloy-signer-local = { version = "=2.0.5", features = ["mnemonic"] }
+alloy-network = "=2.0.5"
+alloy-contract = "=2.0.5"
 alloy-rlp = { version = "0.3", features = ["derive"] }
-alloy-rpc-types = "2.0"
-alloy-rpc-types-engine = "2.0"
-alloy-rpc-types-eth = "2.0"
+alloy-rpc-types = "=2.0.5"
+alloy-rpc-types-engine = "=2.0.5"
+alloy-rpc-types-eth = "=2.0.5"
 
 # EVM
-revm = { version = "38", default-features = false, features = ["std"] }
-revm-precompile = { version = "34", default-features = false, features = ["std"] }
-alloy-evm = { version = "0.34", default-features = false, features = ["std"] }
+revm = { version = "=40.0.3", default-features = false, features = ["std"] }
+revm-precompile = { version = "=36.0.3", default-features = false, features = ["std"] }
+alloy-evm = { version = "=0.36.0", default-features = false, features = ["std"] }
 
 # Roaring bitmaps — pure-Rust impl. RoaringTreemap (64-bit) serialization
 # is byte-deterministic for a given set (sorted-key BTreeMap container

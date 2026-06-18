@@ -33,6 +33,8 @@ jobs:
       fail-fast: false
       matrix:
         package:
+          - arkiv-cli
+          - arkiv-cli-int
           - arkiv-node
           - arkiv-node-int
           - arkiv-node-dev

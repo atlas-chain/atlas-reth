@@ -17,7 +17,7 @@ use std::time::Duration;
 
 /// CLI for submitting EntityRegistry operations.
 #[derive(Parser)]
-#[command(name = "arkiv-cli")]
+#[command(name = "arkiv-cli", version)]
 struct Cli {
     /// RPC endpoint URL.
     #[arg(long, default_value = "http://localhost:8545")]

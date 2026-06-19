@@ -1,5 +1,6 @@
 use alloy_eips::eip1559::{
-    ArkivProtocolParams, ArkivProtocolScheduleEntry, install_arkiv_protocol_schedule,
+    ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS, ArkivProtocolParams, ArkivProtocolScheduleEntry,
+    install_arkiv_protocol_schedule,
 };
 use eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,14 @@ pub fn spawn_from_env() {
             %err,
             path = %path.display(),
             "failed to load persisted protocol schedule"
+        );
+    }
+    if let Err(err) = ensure_default_schedule_file(&path) {
+        warn!(
+            target: "arkiv::protocol_schedule",
+            %err,
+            path = %path.display(),
+            "failed to create default protocol schedule file"
         );
     }
 
@@ -90,6 +99,22 @@ fn load_persisted_schedule(path: &Path) -> Result<()> {
         entries = schedule.schedule.len(),
         path = %path.display(),
         "loaded persisted protocol schedule"
+    );
+    Ok(())
+}
+
+fn ensure_default_schedule_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+
+    let default_schedule = RemoteProtocolSchedule::default_file();
+    let body = serde_json::to_string_pretty(&default_schedule)?;
+    fs::write(path, format!("{body}\n")).with_context(|| format!("write {}", path.display()))?;
+    info!(
+        target: "arkiv::protocol_schedule",
+        path = %path.display(),
+        "created default protocol schedule file"
     );
     Ok(())
 }
@@ -151,6 +176,21 @@ struct RemoteProtocolSchedule {
 }
 
 impl RemoteProtocolSchedule {
+    fn default_file() -> Self {
+        Self {
+            chain_id: 0,
+            version: 1,
+            current_block: Some(0),
+            schedule: vec![RemoteProtocolScheduleEntry {
+                activation_block: 0,
+                min_base_fee_per_gas: U64String(ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS),
+                elasticity_multiplier: 2,
+                base_fee_max_change_denominator: 8,
+                max_block_gas_limit: U64String(30_000_000),
+            }],
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         if self.schedule.is_empty() {
             bail!("schedule must not be empty");
@@ -218,8 +258,17 @@ impl RemoteProtocolScheduleEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
 struct U64String(u64);
+
+impl Serialize for U64String {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
 
 impl<'de> Deserialize<'de> for U64String {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -286,5 +335,20 @@ mod tests {
         let entries = selected_entries(&schedule);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].params.min_base_fee_per_gas, 440_000_000);
+    }
+
+    #[test]
+    fn default_file_round_trips() {
+        let schedule = RemoteProtocolSchedule::default_file();
+        let body = serde_json::to_string_pretty(&schedule).unwrap();
+        let parsed = parse_remote_schedule(&body).unwrap();
+
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.current_block, Some(0));
+        assert_eq!(parsed.schedule.len(), 1);
+        assert_eq!(
+            parsed.schedule[0].min_base_fee_per_gas.0,
+            ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS
+        );
     }
 }

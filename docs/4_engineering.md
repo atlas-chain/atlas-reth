@@ -191,6 +191,9 @@ every 60 seconds, validates the JSON, persists the last accepted
 response, and installs the schedule into the patched `alloy-eips`
 base-fee helpers. If the endpoint is unavailable or returns invalid
 JSON, the node keeps using its last accepted local schedule.
+If the persistence file does not exist at startup, the node writes a
+default file using the compiled defaults so operators have a baseline
+JSON document to edit.
 
 Optional environment:
 

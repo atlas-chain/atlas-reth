@@ -13,11 +13,12 @@ verification recipes see [`3_query.md`](3_query.md).
 
 - [1. Workspace crates](#1-workspace-crates)
 - [2. Genesis construction](#2-genesis-construction)
-- [3. Testing surface](#3-testing-surface)
-- [4. Key design decisions, recapped](#4-key-design-decisions-recapped)
-- [5. Things this design does *not* do](#5-things-this-design-does-not-do)
-- [6. Fault-proof compatibility](#6-fault-proof-compatibility)
-- [7. Open questions](#7-open-questions)
+- [3. Experimental protocol schedule](#3-experimental-protocol-schedule)
+- [4. Testing surface](#4-testing-surface)
+- [5. Key design decisions, recapped](#5-key-design-decisions-recapped)
+- [6. Things this design does *not* do](#6-things-this-design-does-not-do)
+- [7. Fault-proof compatibility](#7-fault-proof-compatibility)
+- [8. Open questions](#8-open-questions)
 
 ---
 
@@ -182,7 +183,66 @@ required production step.
 
 ---
 
-## 3. Testing surface
+## 3. Experimental protocol schedule
+
+Advanced testnets can enable a central protocol-schedule endpoint with
+`ARKIV_PROTOCOL_SCHEDULE_URL`. When set, `arkiv-node` polls the URL
+every 60 seconds, validates the JSON, persists the last accepted
+response, and installs the schedule into the patched `alloy-eips`
+base-fee helpers. If the endpoint is unavailable or returns invalid
+JSON, the node keeps using its last accepted local schedule.
+
+Optional environment:
+
+- `ARKIV_PROTOCOL_SCHEDULE_URL` — enables polling when non-empty.
+- `ARKIV_PROTOCOL_SCHEDULE_PATH` — persistence path; defaults to
+  `arkiv-protocol-schedule.json` in the current working directory.
+- `ARKIV_PROTOCOL_SCHEDULE_POLL_SECONDS` — poll interval; defaults to
+  `60`.
+
+Schema:
+
+```json
+{
+  "chainId": 12345,
+  "version": 7,
+  "currentBlock": 100,
+  "schedule": [
+    {
+      "activationBlock": 0,
+      "minBaseFeePerGas": "440000000",
+      "elasticityMultiplier": 2,
+      "baseFeeMaxChangeDenominator": 8,
+      "maxBlockGasLimit": "30000000"
+    },
+    {
+      "activationBlock": 120,
+      "minBaseFeePerGas": "800000000",
+      "elasticityMultiplier": 4,
+      "baseFeeMaxChangeDenominator": 8,
+      "maxBlockGasLimit": "60000000"
+    }
+  ]
+}
+```
+
+`version` must not go backwards relative to the last accepted response.
+`currentBlock` is optional. When present, the node installs only
+entries with `activationBlock <= currentBlock`; this lets the service
+publish a full schedule while preventing future entries from taking
+effect early. When absent, the node installs the full schedule and the
+patched low-level helpers use the latest entry. Numeric gas fields may
+be decimal strings or `0x`-prefixed hex strings.
+
+This is an experimental testnet control plane, not a production
+hardfork mechanism. The base-fee floor, elasticity multiplier, and
+base-fee max-change denominator affect consensus header validation.
+The `maxBlockGasLimit` value caps payload-builder gas-limit selection;
+the upstream parent/child gas-limit delta validation still applies.
+
+---
+
+## 4. Testing surface
 
 | Layer | Where |
 |---|---|
@@ -196,7 +256,7 @@ required production step.
 
 ---
 
-## 4. Key design decisions, recapped
+## 5. Key design decisions, recapped
 
 | Decision | Why |
 |---|---|
@@ -216,7 +276,7 @@ required production step.
 
 ---
 
-## 5. Things this design does *not* do
+## 6. Things this design does *not* do
 
 - **Built-in `--chain arkiv` name.** Could be done via a custom
   `ChainSpecParser`. Not pursued; the file-based flow works and
@@ -237,7 +297,7 @@ required production step.
 
 ---
 
-## 6. Fault-proof compatibility
+## 7. Fault-proof compatibility
 
 All state changes go through revm's journaled state: account
 creation, `SetCode`, `SetNonce`, `SetState`. These are standard
@@ -264,7 +324,7 @@ Ethereum account.
 
 ---
 
-## 7. Open questions
+## 8. Open questions
 
 1. **Bytecode retention.** Old bitmap-byte, entity-RLP-byte, and
    ART-byte entries are reachable only via historical state roots.

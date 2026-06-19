@@ -42,7 +42,9 @@ async-trait.workspace = true
 clap.workspace = true
 eyre.workspace = true
 jsonrpsee.workspace = true
+reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
@@ -53,4 +55,3 @@ tracing.workspace = true
 # state-root / sealing / tokio noise.
 tracing-chrome = "0.7"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde_json.workspace = true

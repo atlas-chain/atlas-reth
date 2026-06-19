@@ -4,6 +4,7 @@
 pub mod evm;
 mod install;
 pub mod precompile;
+pub mod protocol_schedule;
 pub mod rpc;
 pub mod state_adapter;
 

@@ -1,6 +1,10 @@
 use crate::eip1559::{constants::GAS_LIMIT_BOUND_DIVISOR, BaseFeeParams};
 
-const ARKIV_MIN_BASE_FEE_PER_GAS: u64 = 440_000_000;
+#[cfg(feature = "std")]
+use crate::eip1559::arkiv_protocol_params_latest;
+
+#[cfg(not(feature = "std"))]
+const ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS: u64 = 440_000_000;
 
 /// Calculates the effective gas price for a dynamic fee transaction.
 ///
@@ -95,8 +99,19 @@ pub fn calc_next_block_base_fee(
     gas_used: u64,
     gas_limit: u64,
     base_fee: u64,
-    base_fee_params: BaseFeeParams,
+    _base_fee_params: BaseFeeParams,
 ) -> u64 {
+    #[cfg(feature = "std")]
+    let arkiv_params = arkiv_protocol_params_latest();
+    #[cfg(feature = "std")]
+    let base_fee_params = arkiv_params.base_fee_params();
+    #[cfg(feature = "std")]
+    let min_base_fee_per_gas = arkiv_params.min_base_fee_per_gas;
+    #[cfg(not(feature = "std"))]
+    let base_fee_params = _base_fee_params;
+    #[cfg(not(feature = "std"))]
+    let min_base_fee_per_gas = ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS;
+
     let elasticity = base_fee_params.elasticity_multiplier;
     let max_change_denominator = base_fee_params.max_change_denominator;
 
@@ -106,14 +121,14 @@ pub fn calc_next_block_base_fee(
     // gas limit). Nethermind returns the parent base fee unchanged in these cases; see
     // `DefaultBaseFeeCalculator` in Nethermind.Core.
     if elasticity == 0 || max_change_denominator == 0 {
-        return base_fee.max(ARKIV_MIN_BASE_FEE_PER_GAS);
+        return base_fee.max(min_base_fee_per_gas);
     }
 
     // Calculate the target gas by dividing the gas limit by the elasticity multiplier.
     let gas_target = (gas_limit as u128 / elasticity) as u64;
 
     if gas_target == 0 {
-        return base_fee.max(ARKIV_MIN_BASE_FEE_PER_GAS);
+        return base_fee.max(min_base_fee_per_gas);
     }
 
     let next_base_fee = match gas_used.cmp(&gas_target) {
@@ -144,12 +159,16 @@ pub fn calc_next_block_base_fee(
         }
     };
 
-    next_base_fee.max(ARKIV_MIN_BASE_FEE_PER_GAS)
+    next_base_fee.max(min_base_fee_per_gas)
 }
 
 /// Calculate the gas limit for the next block based on parent and desired gas limits.
 /// Ref: <https://github.com/ethereum/go-ethereum/blob/88cbfab332c96edfbe99d161d9df6a40721bd786/core/block_validator.go#L166>
 pub fn calculate_block_gas_limit(parent_gas_limit: u64, desired_gas_limit: u64) -> u64 {
+    #[cfg(feature = "std")]
+    let desired_gas_limit =
+        desired_gas_limit.min(arkiv_protocol_params_latest().max_block_gas_limit);
+
     let delta = (parent_gas_limit / GAS_LIMIT_BOUND_DIVISOR).saturating_sub(1);
     let min_gas_limit = parent_gas_limit - delta;
     let max_gas_limit = parent_gas_limit + delta;
@@ -160,6 +179,7 @@ pub fn calculate_block_gas_limit(parent_gas_limit: u64, desired_gas_limit: u64) 
 mod tests {
     use super::*;
     use crate::eip1559::constants::{MIN_PROTOCOL_BASE_FEE, MIN_PROTOCOL_BASE_FEE_U256};
+    use crate::eip1559::ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS;
 
     #[test]
     fn min_protocol_sanity() {
@@ -187,7 +207,7 @@ mod tests {
             1125000000, 1083333333, 1053571428, 1179939062, 1116028649, 918084097, 1063811730, 1,
             2, 3,
         ]
-        .map(|fee| fee.max(ARKIV_MIN_BASE_FEE_PER_GAS));
+        .map(|fee| fee.max(ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS));
 
         for i in 0..base_fee.len() {
             assert_eq!(
@@ -220,7 +240,7 @@ mod tests {
             1100000048, 1080000000, 1065714297, 1167067046, 1128881311, 1028254188, 1098203452, 1,
             2, 3,
         ]
-        .map(|fee| fee.max(ARKIV_MIN_BASE_FEE_PER_GAS));
+        .map(|fee| fee.max(ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS));
 
         for i in 0..base_fee.len() {
             assert_eq!(
@@ -253,7 +273,7 @@ mod tests {
             1100000048, 1080000000, 1065714297, 1167067046, 1128881311, 1028254188, 1098203452, 1,
             2, 3,
         ]
-        .map(|fee| fee.max(ARKIV_MIN_BASE_FEE_PER_GAS));
+        .map(|fee| fee.max(ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS));
 
         for i in 0..base_fee.len() {
             assert_eq!(
@@ -286,7 +306,7 @@ mod tests {
             1020000009, 1016000000, 1013142859, 1091550909, 1073187043, 1045042012, 1059031864, 1,
             2, 3,
         ]
-        .map(|fee| fee.max(ARKIV_MIN_BASE_FEE_PER_GAS));
+        .map(|fee| fee.max(ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS));
 
         for i in 0..base_fee.len() {
             assert_eq!(
@@ -319,7 +339,7 @@ mod tests {
             1180000000, 1146666666, 1122857142, 1244299375, 1189416692, 1028254188, 1144836295, 1,
             2, 3,
         ]
-        .map(|fee| fee.max(ARKIV_MIN_BASE_FEE_PER_GAS));
+        .map(|fee| fee.max(ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS));
 
         for i in 0..base_fee.len() {
             assert_eq!(
@@ -339,7 +359,7 @@ mod tests {
         let p = BaseFeeParams::new(8, 0);
         assert_eq!(
             calc_next_block_base_fee(1, 30_000_000, 1_000_000_000, p),
-            ARKIV_MIN_BASE_FEE_PER_GAS
+            ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS
         );
     }
 
@@ -348,7 +368,7 @@ mod tests {
         let p = BaseFeeParams::new(0, 2);
         assert_eq!(
             calc_next_block_base_fee(15_000_000, 30_000_000, 1_000_000_000, p),
-            ARKIV_MIN_BASE_FEE_PER_GAS
+            ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS
         );
     }
 
@@ -358,7 +378,7 @@ mod tests {
         // gas_target = 1 / 2 = 0; gas_used > 0 used to hit a divide-by-zero in the increase path.
         assert_eq!(
             calc_next_block_base_fee(1, 1, 1_000_000_000, p),
-            ARKIV_MIN_BASE_FEE_PER_GAS
+            ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS
         );
     }
 }

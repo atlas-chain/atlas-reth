@@ -1443,6 +1443,7 @@ dependencies = [
  "clap",
  "eyre",
  "jsonrpsee",
+ "reqwest 0.12.28",
  "reth-chainspec",
  "reth-ethereum-cli",
  "reth-ethereum-primitives",
@@ -3836,6 +3837,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -6334,6 +6336,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]

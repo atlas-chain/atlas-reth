@@ -87,6 +87,7 @@ hex = "0.4"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 jsonrpsee = { version = "0.26", features = ["server", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [patch.crates-io]
 alloy-eips = { path = "vendor/alloy-eips" }

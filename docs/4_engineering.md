@@ -159,8 +159,8 @@ geth-format Ethereum genesis. The `just genesis` and `just node-dev`
 recipes copy that file, inject dev-funded accounts, then use the same
 JSON for `init` and `node` so the genesis hash matches.
 The dev genesis intentionally keeps `baseFeePerGas` at `0x1`; Arkiv's
-experimental EIP-1559 minimum base-fee floor is applied in the patched
-next-block base-fee calculation, not by mutating genesis.
+experimental 0.44 gwei EIP-1559 minimum base-fee floor is applied in
+the patched next-block base-fee calculation, not by mutating genesis.
 
 ```bash
 cp chainspec/dev.base.json $TMPDIR/genesis.json

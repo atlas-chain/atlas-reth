@@ -1,6 +1,6 @@
 use crate::eip1559::{constants::GAS_LIMIT_BOUND_DIVISOR, BaseFeeParams};
 
-const ARKIV_MIN_BASE_FEE_PER_GAS: u64 = 440_000_000_000_000_000;
+const ARKIV_MIN_BASE_FEE_PER_GAS: u64 = 440_000_000;
 
 /// Calculates the effective gas price for a dynamic fee transaction.
 ///

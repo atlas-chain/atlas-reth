@@ -593,8 +593,11 @@ computed results to at least `440_000_000` wei per gas, or 0.44 gwei
 (`0x1a39de00`). Advanced testnets may override the base-fee floor,
 elasticity multiplier, base-fee max-change denominator, and payload
 gas-limit cap through the central protocol schedule described in
-[`4_engineering.md`](4_engineering.md). This is consensus behavior:
-every execution node validating the chain must run the same rule.
+[`4_engineering.md`](4_engineering.md). The publishing service
+contract is specified in
+[`6_protocol-schedule-service.md`](6_protocol-schedule-service.md).
+This is consensus behavior: every execution node validating the chain
+must run the same rule.
 
 Gas is charged as a pure function of operation inputs, with no
 dependency on any pre-existing state. The precompile computes per-op

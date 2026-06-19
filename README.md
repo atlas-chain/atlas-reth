@@ -138,6 +138,7 @@ bytecode at `ARKIV_ADDRESS`.
 | [`docs/2_state-model.md`](docs/2_state-model.md) | Canonical state model: entity / pair / index accounts, system-account slots, op lifecycle, gas, reorg. |
 | [`docs/3_query.md`](docs/3_query.md) | Query language, evaluation flow, historical reads, verification recipes. |
 | [`docs/4_engineering.md`](docs/4_engineering.md) | Crate layout, genesis construction, testing surface, fault-proof story, open questions. |
+| [`docs/6_protocol-schedule-service.md`](docs/6_protocol-schedule-service.md) | HTTP service contract for publishing Arkiv protocol schedules. |
 
 ## Build, Test, Lint
 

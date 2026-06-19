@@ -242,6 +242,8 @@ hardfork mechanism. The base-fee floor, elasticity multiplier, and
 base-fee max-change denominator affect consensus header validation.
 The `maxBlockGasLimit` value caps payload-builder gas-limit selection;
 the upstream parent/child gas-limit delta validation still applies.
+The HTTP service contract for publishing this JSON is specified in
+[`6_protocol-schedule-service.md`](6_protocol-schedule-service.md).
 
 ---
 

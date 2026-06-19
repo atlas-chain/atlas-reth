@@ -586,6 +586,13 @@ the canonical execution path along with every other state-mutating op.
 
 ## 4. Gas Model
 
+Arkiv currently carries an experimental protocol-level EIP-1559 base
+fee floor in its patched `alloy-eips` dependency. The genesis
+`baseFeePerGas` remains `0x1`; next-block base-fee calculation clamps
+all computed results to at least `440_000_000_000_000_000` wei per
+gas (`0x61b31ab352c0000`). This is consensus behavior: every
+execution node validating the chain must run the same patched rule.
+
 Gas is charged as a pure function of operation inputs, with no
 dependency on any pre-existing state. The precompile computes per-op
 cost from calldata only and charges it via standard revm precompile

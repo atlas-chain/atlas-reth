@@ -88,6 +88,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 jsonrpsee = { version = "0.26", features = ["server", "macros"] }
 
+[patch.crates-io]
+alloy-eips = { path = "vendor/alloy-eips" }
+
 [profile.dev]
 opt-level = 0
 debug = "line-tables-only"

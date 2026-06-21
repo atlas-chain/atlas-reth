@@ -42,11 +42,11 @@ Non-goals for v1:
 ```text
 1. Client canonical-encodes Operation[].
 2. Client computes payloadHash.
-3. Client asks one provider to certify the payload.
-4. Provider validates, stores by hash, and signs a certificate.
+3. Client sends payload to one provider.
+4. Provider validates, stores by hash, and returns a certificate.
 5. Client signs tx: commit(payloadHash, certificate).
-6. Client submits {payload, signedTx} to the provider mempool.
-7. Provider verifies the bundle and relays the signed tx.
+6. Client submits signedTx to the provider mempool.
+7. Provider verifies signedTx references the stored payload/certificate and relays it.
 8. Precompile verifies certificate, bumps Arkiv nonce, emits commitment.
 9. Projector watches finalized commitments.
 10. Projector fetches payload, verifies hash/envelope, applies ops in chain order.
@@ -55,7 +55,7 @@ Non-goals for v1:
 The tx never fetches the payload; it validates only the provider certificate.
 That certificate is the centralized v1 claim that the payload exists and passed
 validation. The provider mempool makes payload availability part of tx ingress:
-only bundles whose signed tx matches the stored payload are relayed.
+only signed txs matching a provider-stored payload are relayed.
 
 ## On-Chain Surface
 
@@ -154,7 +154,7 @@ POST /payload
   response: payloadHash + signed AvailabilityCertificate
 
 POST /submit
-  request: canonical payload bytes + signed blockchain tx
+  request: signed blockchain tx
   response: provider mempool tx id / status
 
 GET /payload/{payloadHash}
@@ -179,9 +179,9 @@ to switch, then deactivate the old key after outstanding certificates expire.
 
 1. recover the tx sender and decode `commit(payloadHash, certificate)`;
 2. verify the tx targets `ARKIV_ADDRESS` on the expected chain;
-3. recompute payload hash and verify it matches the tx and certificate;
+3. verify `payloadHash` is already stored by this provider;
 4. verify the certificate signer/provider/version/expiry;
-5. reject if payload semantics are invalid or the payload is not stored;
+5. reject if the tx hash/certificate does not match the stored payload;
 6. accept into the provider mempool, dedupe by tx hash and payload hash, and
    relay/broadcast the exact signed tx.
 

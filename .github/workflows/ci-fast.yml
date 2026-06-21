@@ -1,4 +1,4 @@
-name: Fast lane of CI (Docker Image Internal)
+name: Nova lane of CI (Docker Image Internal)
 
 on:
   push:
@@ -74,7 +74,7 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "ci-fast-checks"
+          shared-key: "ci-nova-checks"
           save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
 
       - name: Set up just
@@ -93,7 +93,7 @@ jobs:
         run: just e2e-tests
 
   build:
-    runs-on: op-reth-builder
+    runs-on: op-nova-builder
 
     steps:
       - name: Checkout repository
@@ -117,7 +117,7 @@ jobs:
       - name: Load local cache
         id: cache_action
         env:
-          cache_dir: /opt/op-reth-builder_cache/${{ steps.variables.outputs.rust_version }}/${{ steps.variables.outputs.branch }}/${{ steps.variables.outputs.rust_flags_md5 }}/binaries_x86/target
+          cache_dir: /opt/op-nova-builder_cache/${{ steps.variables.outputs.rust_version }}/${{ steps.variables.outputs.branch }}/${{ steps.variables.outputs.rust_flags_md5 }}/binaries_x86/target
           clean_build: ${{ steps.variables.outputs.clean_build }}
         run: |
           echo "Cache path: $cache_dir"
@@ -135,7 +135,7 @@ jobs:
           else
             echo "No local cache found at $cache_dir"
             # fallback: try main branch cache if current branch cache is missing
-            fallback_cache_dir="/opt/op-reth-builder_cache/${{ steps.variables.outputs.rust_version }}/main/${{ steps.variables.outputs.rust_flags_md5 }}/binaries_x86/target"
+            fallback_cache_dir="/opt/op-nova-builder_cache/${{ steps.variables.outputs.rust_version }}/main/${{ steps.variables.outputs.rust_flags_md5 }}/binaries_x86/target"
             if [ -d "$fallback_cache_dir" ]; then
               if [ "$clean_build" = "true" ]; then
                 echo "clean_build=true -> skipping use of fallback cache at $fallback_cache_dir"

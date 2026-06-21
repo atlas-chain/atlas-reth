@@ -93,7 +93,7 @@ jobs:
         run: just e2e-tests
 
   build:
-    runs-on: op-nova-builder
+    runs-on: nova
 
     steps:
       - name: Checkout repository

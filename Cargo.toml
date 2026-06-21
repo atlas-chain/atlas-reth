@@ -3,7 +3,7 @@ members = ["crates/arkiv-node", "crates/arkiv-cli", "crates/arkiv-entitydb", "cr
 resolver = "2"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Arkiv Contributors <dev@arkiv.network>"]
 edition = "2024"
 rust-version = "1.94"

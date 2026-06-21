@@ -8,7 +8,7 @@ fi
 
 GENESIS="${ARKIV_DEV_GENESIS:-/home/docker/genesis.json}"
 CHAINSPEC_TEMPLATE="${ARKIV_DEV_CHAINSPEC:-/opt/arkiv/dev.base.json}"
-DATADIR="${ARKIV_DEV_DATADIR:-/home/docker/.local/share/atlas-node}"
+DATADIR="${ARKIV_DEV_DATADIR:-/home/docker/.local/share/arkiv-node}"
 
 if [ "${ARKIV_DEV_USE_EXISTING_GENESIS:-false}" = "true" ] && [ -f "$GENESIS" ]; then
     echo "[dev-entrypoint] existing genesis at ${GENESIS} - skipping bootstrap"
@@ -25,14 +25,14 @@ else
 
     cp "$CHAINSPEC_TEMPLATE" "$GENESIS"
     arkiv-cli inject-predeploy "$GENESIS"
-    atlas-node init --chain "$GENESIS" --datadir "$DATADIR"
+    arkiv-node init --chain "$GENESIS" --datadir "$DATADIR"
 fi
 
 if [ -n "${ARKIV_NODE_CLI:-}" ]; then
     echo "[dev-entrypoint] using ARKIV_NODE_CLI override: ${ARKIV_NODE_CLI}"
-    exec sh -c "exec atlas-node ${ARKIV_NODE_CLI}"
+    exec sh -c "exec arkiv-node ${ARKIV_NODE_CLI}"
 else
-    exec atlas-node \
+    exec arkiv-node \
         node \
         --datadir "$DATADIR" \
         --chain "$GENESIS" \

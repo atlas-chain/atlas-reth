@@ -18,7 +18,7 @@ case "${1:-}" in
     --address|--address=*|--value|--value=*|--rpc-url|--rpc-url=*|--private-key|--private-key=*|-h|--help)
         ;;
     *)
-        exec atlas-node "$@"
+        exec arkiv-node "$@"
         ;;
 esac
 

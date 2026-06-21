@@ -114,8 +114,8 @@ jobs:
           arm64='{"arch":"arm64","runner":"ubuntu-24.04-arm","foundry_arch":"arm64"}'
 
           # image-variant suffixes merged into each arch entry for docker jobs
-          std='"image":"atlas-node","dockerfile":"runtime.Dockerfile","dev":false,"builder":"create-docker-image-full","description":"Production image build"'
-          dev='"image":"atlas-node-dev","dockerfile":"runtime-dev.Dockerfile","dev":true,"builder":"create-docker-image-dev-full","description":"Production dev image (bundled bootstrap)"'
+          std='"image":"arkiv-node","dockerfile":"runtime.Dockerfile","dev":false,"builder":"create-docker-image-full","description":"Production image build"'
+          dev='"image":"arkiv-node-dev","dockerfile":"runtime-dev.Dockerfile","dev":true,"builder":"create-docker-image-dev-full","description":"Production dev image (bundled bootstrap)"'
 
           mk() { local base=$1 variant=$2; echo "${base%\}},${variant}}"; }
 
@@ -168,12 +168,12 @@ jobs:
           anvil --version
 
       - name: Build binary
-        run: cargo build --profile release-lto --bin atlas-node --bin arkiv-cli
+        run: cargo build --profile release-lto --bin arkiv-node --bin arkiv-cli
 
       - name: Move arkiv-node binary to build directory
         run: |
           mkdir build-artifacts
-          mv target/release-lto/{atlas-node,arkiv-cli} build-artifacts
+          mv target/release-lto/{arkiv-node,arkiv-cli} build-artifacts
 
       - name: Strip binaries
         if: ${{ github.event.inputs.strip_binaries != 'false' }}
@@ -207,7 +207,7 @@ jobs:
 
           staging_dir="${RUNNER_TEMP}/artifact-upload"
           mkdir -p "$staging_dir"
-          cp /tmp/arkiv-binaries/atlas-node "$staging_dir/atlas-node"
+          cp /tmp/arkiv-binaries/arkiv-node "$staging_dir/arkiv-node"
           cp /tmp/arkiv-binaries/arkiv-cli "$staging_dir/arkiv-cli"
           chmod +x "$staging_dir"/*
 
@@ -218,7 +218,7 @@ jobs:
           fi
           archive="${RUNNER_TEMP}/${archive_basename}"
 
-          tar -cJf "$archive" -C "$staging_dir" atlas-node arkiv-cli
+          tar -cJf "$archive" -C "$staging_dir" arkiv-node arkiv-cli
 
           echo "archive=${archive}" >> "$GITHUB_OUTPUT"
           echo "archive_basename=${archive_basename}" >> "$GITHUB_OUTPUT"
@@ -235,7 +235,7 @@ jobs:
             "${TRACKER_BACKEND_URL%/}/artifact/upload" \
             -F "repo=arkiv-network/arkiv-op-reth" \
             -F "commit=${GITHUB_SHA}" \
-            -F "binaries=atlas-node" \
+            -F "binaries=arkiv-node" \
             -F "binaries=arkiv-cli" \
             -F "name=arkiv-op-reth-production-linux-${{ matrix.arch }}" \
             -F "description=Full production binary build (${{ matrix.arch }}) for ${GITHUB_REF_NAME}" \
@@ -278,7 +278,7 @@ jobs:
         run: |
           mkdir -p docker-context/build-artifacts
           cp docker/${{ matrix.dockerfile }} docker-context/Dockerfile
-          cp /tmp/arkiv-binaries/atlas-node docker-context/build-artifacts/atlas-node
+          cp /tmp/arkiv-binaries/arkiv-node docker-context/build-artifacts/arkiv-node
           cp /tmp/arkiv-binaries/arkiv-cli docker-context/build-artifacts/arkiv-cli
           chmod +x docker-context/build-artifacts/*
 
@@ -328,7 +328,7 @@ jobs:
             --data-binary @- <<EOF
           {
             "builder": "${{ matrix.builder }}-${{ matrix.arch }}",
-            "binaries": ["atlas-node", "arkiv-cli"],
+            "binaries": ["arkiv-node", "arkiv-cli"],
             "commit": "${{ github.sha }}",
             "ref": "${{ github.ref }}",
             "packages": ["${{ matrix.image }}:${{ github.sha }}-${{ matrix.arch }}"],
@@ -346,7 +346,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/smoke-test
         with:
-          image: ghcr.io/arkiv-network/atlas-node-dev:${{ github.sha }}-amd64
+          image: ghcr.io/arkiv-network/arkiv-node-dev:${{ github.sha }}-amd64
           token: ${{ secrets.GITHUB_TOKEN }}
 
   merge-manifests:
@@ -387,5 +387,5 @@ jobs:
             done
           }
 
-          merge_image "atlas-node"
-          merge_image "atlas-node-dev"
+          merge_image "arkiv-node"
+          merge_image "arkiv-node-dev"

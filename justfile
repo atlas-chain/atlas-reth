@@ -51,7 +51,7 @@ genesis:
     {{ arkiv_cli }} inject-predeploy "$GENESIS" 2>/dev/null
     cat "$GENESIS"
 
-# Run atlas-node in dev mode against a freshly assembled Arkiv genesis.
+# Run arkiv-node in dev mode against a freshly assembled Arkiv genesis.
 # Generates genesis -> init datadir -> launch node, all against the same
 # chainspec file so init/node agree on the genesis hash.
 #
@@ -87,7 +87,7 @@ node-dev *args='':
         --txpool.minimum-priority-fee 0 \
         {{ args }}
 
-# Resume atlas-node in dev mode against the existing datadir (no wipe, no re-init).
+# Resume arkiv-node in dev mode against the existing datadir (no wipe, no re-init).
 # Use this after a `node-dev` run to restart without losing the MDBX state.
 node-dev-resume *args='':
     #!/usr/bin/env bash
@@ -117,7 +117,7 @@ node-dev-resume *args='':
         --txpool.minimum-priority-fee 0 \
         {{ args }}
 
-# Run atlas-node with custom args
+# Run arkiv-node with custom args
 node *args='':
     {{ arkiv_node }} {{ args }}
 

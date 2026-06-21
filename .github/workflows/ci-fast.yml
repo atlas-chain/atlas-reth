@@ -35,7 +35,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  ARKIV_NODE_IMAGE: ghcr.io/arkiv-network/atlas-node-int:${{ github.sha }}
+  ARKIV_NODE_IMAGE: ghcr.io/arkiv-network/arkiv-node-int:${{ github.sha }}
 
 jobs:
   checks:
@@ -153,12 +153,12 @@ jobs:
           echo "cache_dir=$cache_dir" >> $GITHUB_OUTPUT
 
       - name: Build arkiv binaries
-        run: cargo build --bin atlas-node --bin arkiv-cli
+        run: cargo build --bin arkiv-node --bin arkiv-cli
 
       - name: Move binaries to build directory
         run: |
           mkdir build-artifacts
-          mv target/debug/{atlas-node,arkiv-cli} build-artifacts
+          mv target/debug/{arkiv-node,arkiv-cli} build-artifacts
 
       - name: Strip binaries
         if: ${{ github.event.inputs.strip_binaries != 'false' }}
@@ -194,7 +194,7 @@ jobs:
 
           staging_dir="${RUNNER_TEMP}/artifact-upload"
           mkdir -p "$staging_dir"
-          cp /tmp/arkiv-binaries/atlas-node "$staging_dir/atlas-node"
+          cp /tmp/arkiv-binaries/arkiv-node "$staging_dir/arkiv-node"
           cp /tmp/arkiv-binaries/arkiv-cli "$staging_dir/arkiv-cli"
           chmod +x "$staging_dir"/*
 
@@ -205,7 +205,7 @@ jobs:
           fi
           archive="${RUNNER_TEMP}/${archive_basename}"
 
-          tar -czf "$archive" -C "$staging_dir" atlas-node arkiv-cli
+          tar -czf "$archive" -C "$staging_dir" arkiv-node arkiv-cli
 
           echo "archive=${archive}" >> "$GITHUB_OUTPUT"
           echo "archive_basename=${archive_basename}" >> "$GITHUB_OUTPUT"
@@ -221,7 +221,7 @@ jobs:
             "${TRACKER_BACKEND_URL%/}/artifact/upload" \
             -F "repo=arkiv-network/arkiv-op-reth" \
             -F "commit=${GITHUB_SHA}" \
-            -F "binaries=atlas-node-int" \
+            -F "binaries=arkiv-node-int" \
             -F "binaries=arkiv-cli-int" \
             -F "name=arkiv-op-reth-integration-tests-linux-amd64" \
             -F "description=Fast integration-test binary build for ${GITHUB_REF_NAME}" \
@@ -242,11 +242,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - image: atlas-node-int
+          - image: arkiv-node-int
             dockerfile: runtime.Dockerfile
             dev: false
             description: "Builds for integration tests"
-          - image: atlas-node-dev-int
+          - image: arkiv-node-dev-int
             dockerfile: runtime-dev.Dockerfile
             dev: true
             description: "Dev integration image (bundled bootstrap)"
@@ -265,7 +265,7 @@ jobs:
         run: |
           mkdir -p docker-context/build-artifacts
           cp docker/${{ matrix.dockerfile }} docker-context/Dockerfile
-          cp /tmp/arkiv-binaries/atlas-node docker-context/build-artifacts/atlas-node
+          cp /tmp/arkiv-binaries/arkiv-node docker-context/build-artifacts/arkiv-node
           cp /tmp/arkiv-binaries/arkiv-cli docker-context/build-artifacts/arkiv-cli
           chmod +x docker-context/build-artifacts/*
 
@@ -312,7 +312,7 @@ jobs:
             --data-binary @- <<EOF
           {
             "builder": "create-docker-image-${{ matrix.image }}",
-            "binaries": ["atlas-node-int", "arkiv-cli-int"],
+            "binaries": ["arkiv-node-int", "arkiv-cli-int"],
             "commit": "${{ github.sha }}",
             "ref": "${{ github.ref }}",
             "packages": ["${{ matrix.image }}:${{ github.sha }}"],
@@ -329,7 +329,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/smoke-test
         with:
-          image: ghcr.io/arkiv-network/atlas-node-dev-int:${{ github.sha }}
+          image: ghcr.io/arkiv-network/arkiv-node-dev-int:${{ github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # Figure it out what it could do in current v3 version and if needed bring it back

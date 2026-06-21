@@ -15,7 +15,7 @@ RUN apt-get update \
 RUN curl -sL https://github.com/foundry-rs/foundry/releases/download/v1.7.0/foundry_v1.7.0_linux_${FOUNDRY_ARCH}.tar.gz | tar -xz \
   && mv forge cast anvil chisel /usr/local/bin/
 
-COPY --chmod=0755 build-artifacts/atlas-node /usr/local/bin/atlas-node
+COPY --chmod=0755 build-artifacts/arkiv-node /usr/local/bin/arkiv-node
 COPY --chmod=0755 build-artifacts/arkiv-cli /usr/local/bin/arkiv-cli
 COPY --chmod=0755 docker/fund-account.sh /usr/local/bin/fund-account.sh
 

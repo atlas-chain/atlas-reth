@@ -30,7 +30,9 @@ becomes the high-performance database and query engine.
 - Commit every DB mutation request by hash on-chain.
 - Require centralized payload availability and validation for the first
   version.
-- Leave room to replace the centralized availability service with a
+- Support multiple centralized availability providers, each with its own
+  signing key.
+- Leave room to replace the centralized availability provider set with a
   decentralized data-availability solution later.
 
 ## Non-goals for v1
@@ -45,9 +47,9 @@ becomes the high-performance database and query engine.
 ```text
 1. Client canonical-encodes Operation[].
 2. Client computes payloadHash.
-3. Client uploads the payload to the centralized availability service.
-4. Availability service validates the payload and stores it by hash.
-5. Availability service signs an availability/validation certificate.
+3. Client uploads the payload to one centralized availability provider.
+4. Availability provider validates the payload and stores it by hash.
+5. Availability provider signs an availability/validation certificate.
 6. Client sends a blockchain tx containing payloadHash + certificate.
 7. Arkiv precompile verifies the certificate and emits a commitment event.
 8. DB projector watches finalized chain commitments.
@@ -55,7 +57,7 @@ becomes the high-performance database and query engine.
    in finalized chain order.
 ```
 
-The transaction must not fetch the payload from the service. The transaction
+The transaction must not fetch the payload from a provider. The transaction
 only verifies the signed certificate. The certificate is the centralized v1
 claim that the payload exists and has passed validation.
 
@@ -69,7 +71,8 @@ function commit(bytes32 payloadHash, AvailabilityCertificate cert) external;
 event PayloadCommitted(
     address indexed sender,
     uint32 indexed nonce,
-    bytes32 indexed payloadHash
+    bytes32 indexed payloadHash,
+    uint32 providerId
 );
 ```
 
@@ -77,9 +80,16 @@ The exact Solidity type for `AvailabilityCertificate` can be chosen during
 implementation. At minimum it needs to carry signed data and the signer
 identity or recoverable signature.
 
+The precompile must know the active provider set. For v1, the acceptance
+policy can be "any one active provider signature is sufficient." Each provider
+has an independent private key and a stable provider ID. The provider ID should
+be included in the signed certificate and emitted in the commitment event so
+callers can audit which provider accepted the payload.
+
 The precompile should validate:
 
-- certificate signature recovers to the configured availability-service key;
+- certificate `providerId` is active under the configured provider set;
+- certificate signature recovers to the active provider key for `providerId`;
 - certificate `chainId` equals the current chain ID;
 - certificate `registry` equals `ARKIV_ADDRESS`;
 - certificate `sender` equals `msg.sender`;
@@ -97,6 +107,7 @@ The signed certificate message should bind:
 
 ```text
 version
+providerId
 chainId
 registry/precompile address
 sender
@@ -140,15 +151,28 @@ Then:
 payloadHash = keccak256("arkiv.payload.v1" || canonical_payload_bytes)
 ```
 
-The availability service and DB projector must recompute this hash before
+The availability provider and DB projector must recompute this hash before
 accepting or applying a payload.
 
-## Availability Service
+## Availability Providers
 
-For v1, Arkiv trusts one centralized service key for availability and
-pre-validation.
+For v1, Arkiv can trust a configured set of centralized availability
+providers. Each provider runs the same API, validates payloads independently,
+stores accepted payloads, and signs certificates with its own private key.
 
-The service should expose at least:
+The initial on-chain policy can accept a certificate from any active provider.
+This keeps the write path simple while allowing operational redundancy: clients
+can choose the provider they use, and one unavailable provider does not halt
+the system as long as another active provider can certify payloads.
+
+The provider set needs governance/configuration outside the payload itself.
+Implementation options include:
+
+- compile-time or genesis-configured provider keys for the first devnet;
+- chainspec/config-file provider keys loaded by `arkiv-node`;
+- a future on-chain or operator-managed provider registry.
+
+Each provider should expose at least:
 
 ```text
 POST /payload
@@ -159,7 +183,7 @@ GET /payload/{payloadHash}
   response: canonical payload bytes
 ```
 
-On `POST /payload`, the service:
+On `POST /payload`, the provider:
 
 1. canonicalizes or verifies the submitted canonical payload;
 2. recomputes `payloadHash`;
@@ -170,6 +194,10 @@ On `POST /payload`, the service:
 
 Validation can initially be centralized and stateful. Invalid payloads are
 rejected before the client sends the blockchain transaction.
+
+Providers should use independent private keys. Key rotation should be modeled
+as provider-set updates: add the new key as active, wait for clients to switch,
+then deactivate the old key after outstanding certificates expire.
 
 ## DB Projector
 
@@ -192,7 +220,7 @@ rollback.
 
 There are two classes of invalid payload handling:
 
-- Before tx: the centralized availability service rejects malformed or
+- Before tx: the centralized availability provider rejects malformed or
   semantically invalid payloads and refuses to issue a certificate.
 - During tx: the precompile rejects invalid certificates, wrong sender, wrong
   nonce, wrong chain, wrong registry, hash mismatch, unsupported version, or
@@ -207,24 +235,27 @@ committed in the tx.
 With centralized availability, the chain only proves:
 
 - a sender committed to a payload hash;
-- the trusted service signed a certificate for that hash;
+- an active trusted provider signed a certificate for that hash;
 - the commitment order and nonce are canonical.
 
 The chain does not independently prove that the payload remains retrievable
 forever. The v1 trust model is therefore:
 
 ```text
-Blockchain trusts one service key for availability + pre-validation.
+Blockchain trusts the active provider key set for availability + pre-validation.
 DB projection trusts finalized chain order.
-Clients trust the service to keep payloads retrievable.
+Clients trust the provider that certified a payload to keep it retrievable.
 ```
 
-Later, the single service signature can be replaced by a quorum certificate,
-bonded service, challenge protocol, or external data-availability proof.
+Multiple centralized providers improve operational redundancy, but they do not
+make availability trustless if the on-chain policy accepts one provider
+signature. Later, the acceptance policy can move from "any one active provider"
+to a quorum certificate, bonded service, challenge protocol, or external
+data-availability proof.
 
 ## Test Plan
 
-Service validation tests:
+Provider validation tests:
 
 - valid create payload is accepted, stored, and certified;
 - malformed payload is rejected;
@@ -239,6 +270,9 @@ Precompile/transaction tests:
 
 - valid hash plus valid certificate succeeds and emits `PayloadCommitted`;
 - certificate signed by wrong key reverts;
+- certificate from unknown provider ID reverts;
+- certificate from deactivated provider ID reverts;
+- certificate signed by provider A but labeled as provider B reverts;
 - certificate sender different from `msg.sender` reverts;
 - certificate nonce different from current Arkiv nonce reverts;
 - certificate chain ID different from current chain reverts;
@@ -264,10 +298,10 @@ The safest implementation path is additive:
 
 1. Add `commit(bytes32, certificate)` beside the existing
    `execute(Operation[])` path.
-2. Implement the centralized availability service and projector.
+2. Implement one centralized availability provider, then generalize to the
+   configured provider set before production use.
 3. Move CLI and SDK write flows to payload upload + commitment tx.
 4. Keep the old trie-backed execution path only for compatibility during
    migration.
 5. Remove or disable direct state-trie entity writes once the separate DB path
    is proven.
-

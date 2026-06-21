@@ -12,7 +12,7 @@ RUN apt-get update \
     && useradd --uid 714 --gid docker --create-home --home-dir /home/docker --shell /usr/sbin/nologin docker \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --chmod=0755 build-artifacts/arkiv-node /usr/local/bin/arkiv-node
+COPY --chmod=0755 build-artifacts/atlas-node /usr/local/bin/atlas-node
 COPY --chmod=0755 build-artifacts/arkiv-cli /usr/local/bin/arkiv-cli
 
 RUN mkdir -p /app /home/docker \
@@ -21,4 +21,4 @@ WORKDIR /app
 
 USER docker
 
-ENTRYPOINT ["arkiv-node"]
+ENTRYPOINT ["atlas-node"]

@@ -9,7 +9,7 @@ license.workspace = true
 path = "src/lib.rs"
 
 [[bin]]
-name = "arkiv-node"
+name = "atlas-node"
 path = "src/main.rs"
 
 [dependencies]

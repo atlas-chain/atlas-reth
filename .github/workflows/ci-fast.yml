@@ -210,23 +210,6 @@ jobs:
           echo "archive=${archive}" >> "$GITHUB_OUTPUT"
           echo "archive_basename=${archive_basename}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload binaries to custom tracker
-        env:
-          TRACKER_BACKEND_URL: ${{ secrets.TRACKER_BACKEND_URL }}
-        run: |
-          set -euo pipefail
-
-          curl --fail --show-error --silent \
-            -X POST \
-            "${TRACKER_BACKEND_URL%/}/artifact/upload" \
-            -F "repo=atlas-chain/atlas-reth" \
-            -F "commit=${GITHUB_SHA}" \
-            -F "binaries=arkiv-node-int" \
-            -F "binaries=arkiv-cli-int" \
-            -F "name=arkiv-node-integration-tests-linux-amd64" \
-            -F "description=Fast integration-test binary build for ${GITHUB_REF_NAME}" \
-            -F "file=@${{ steps.pack.outputs.archive }};type=application/gzip"
-
       - name: Upload binaries to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -300,26 +283,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Notify about release
-        env:
-          TRACKER_BACKEND_URL: ${{ secrets.TRACKER_BACKEND_URL }}
-        run: |
-          curl --fail --show-error --silent \
-            -X POST \
-            -H "Content-Type: application/json" \
-            "${TRACKER_BACKEND_URL}/release/publish" \
-            --data-binary @- <<EOF
-          {
-            "builder": "create-docker-image-${{ matrix.image }}",
-            "binaries": ["arkiv-node-int", "arkiv-cli-int"],
-            "commit": "${{ github.sha }}",
-            "ref": "${{ github.ref }}",
-            "packages": ["${{ matrix.image }}:${{ github.sha }}"],
-            "description": "${{ matrix.description }}",
-            "repository": "atlas-chain/atlas-reth"
-          }
-          EOF
 
   smoke-test:
     runs-on: ubuntu-latest

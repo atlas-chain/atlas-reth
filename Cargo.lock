@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "arkiv-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy-contract",
  "alloy-network",
@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "arkiv-e2e"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
@@ -1404,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "arkiv-entitydb"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -1416,7 +1416,7 @@ dependencies = [
 
 [[package]]
 name = "arkiv-genesis"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy-genesis",
  "alloy-primitives",
@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "arkiv-node"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",

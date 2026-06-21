@@ -9,7 +9,7 @@ journaling, account/code writes, trie updates, historical state, and block
 execution. The new split:
 
 ```text
-Payload service / DB: stores Operation[], materializes indexes, relays signed txs
+Payload service / DB: stores Operation[] payloads and materializes query indexes
 Blockchain: stores ordering, sender authorization, nonce, and payload hashes
 ```
 
@@ -26,8 +26,6 @@ Goals:
 - require centralized payload availability and validation in v1;
 - support multiple centralized availability providers, each with its own
   signing key;
-- let providers accept already signed blockchain transactions and act as a
-  payload-aware mempool/relay;
 - allow a later move to decentralized data availability.
 
 Non-goals for v1:
@@ -45,17 +43,17 @@ Non-goals for v1:
 3. Client sends payload to one provider.
 4. Provider validates, stores by hash, and returns a certificate.
 5. Client signs tx: commit(payloadHash, certificate).
-6. Client submits signedTx to the provider mempool.
-7. Provider verifies signedTx references the stored payload/certificate and relays it.
-8. Precompile verifies certificate, bumps Arkiv nonce, emits commitment.
-9. Projector watches finalized commitments.
-10. Projector fetches payload, verifies hash/envelope, applies ops in chain order.
+6. Client submits the signed tx through standard RPC.
+7. Precompile verifies certificate, bumps Arkiv nonce, emits commitment.
+8. Projector watches finalized commitments.
+9. Projector fetches payload, verifies hash/envelope, applies ops in chain order.
 ```
 
 The tx never fetches the payload; it validates only the provider certificate.
 That certificate is the centralized v1 claim that the payload exists and passed
-validation. The provider mempool makes payload availability part of tx ingress:
-only signed txs matching a provider-stored payload are relayed.
+validation. Transaction propagation remains the standard blockchain RPC/mempool
+path; payload availability is enforced by requiring a valid provider certificate
+in the committed tx.
 
 ## On-Chain Surface
 
@@ -153,10 +151,6 @@ POST /payload
   request: canonical payload bytes or structured payload envelope
   response: payloadHash + signed AvailabilityCertificate
 
-POST /submit
-  request: signed blockchain tx
-  response: provider mempool tx id / status
-
 GET /payload/{payloadHash}
   response: canonical payload bytes
 ```
@@ -174,21 +168,6 @@ Validation can initially be centralized and stateful. Invalid payloads are
 rejected before the blockchain tx. Providers should use independent private
 keys. Key rotation is a provider-set update: add the new key, wait for clients
 to switch, then deactivate the old key after outstanding certificates expire.
-
-`POST /submit` behavior:
-
-1. recover the tx sender and decode `commit(payloadHash, certificate)`;
-2. verify the tx targets `ARKIV_ADDRESS` on the expected chain;
-3. verify `payloadHash` is already stored by this provider;
-4. verify the certificate signer/provider/version/expiry;
-5. reject if the tx hash/certificate does not match the stored payload;
-6. accept into the provider mempool, dedupe by tx hash and payload hash, and
-   relay/broadcast the exact signed tx.
-
-The provider can delay, drop, or censor txs, but cannot mutate them. Replacement
-requires a new user-signed tx. Public chain ingress that bypasses provider
-mempools can still create hash-only commitments unless the precompile requires
-valid provider certificates, which this design does.
 
 ## Projector
 
@@ -245,17 +224,6 @@ Provider validation:
 - unauthorized update/delete is rejected when stateful validation is enabled;
 - payload hash mismatch is rejected;
 - unsupported payload schema version is rejected.
-
-Provider mempool/relay:
-
-- signed tx with matching stored payload is accepted and relayed;
-- tx sender mismatch with certificate sender is rejected;
-- tx target different from `ARKIV_ADDRESS` is rejected;
-- tx calldata hash different from payload hash is rejected;
-- unstored payload hash is rejected;
-- duplicate tx hash is deduped;
-- replacement requires a distinct user-signed tx;
-- relayed tx bytes are identical to submitted tx bytes.
 
 Precompile/transaction:
 

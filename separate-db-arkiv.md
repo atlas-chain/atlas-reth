@@ -9,12 +9,15 @@ journaling, account/code writes, trie updates, historical state, and block
 execution. The new split:
 
 ```text
-Payload service / DB: stores Operation[] payloads and materializes query indexes
+Payload providers: validate Operation[] payloads, store by hash, sign certs
+DB providers: consume committed hashes, fetch payloads, materialize query indexes
 Blockchain: stores ordering, sender authorization, nonce, and payload hashes
 ```
 
-The chain is an ordered commitment log; the external Arkiv service is the
-high-performance database and query engine.
+The chain is an ordered commitment log. Payload providers handle availability
+and pre-validation; DB providers/projectors build the high-performance query
+state. A deployment may co-locate both roles, but the protocol treats them as
+distinct.
 
 ## Scope
 
@@ -38,17 +41,19 @@ Non-goals for v1:
 ## Flow
 
 ```text
-1. Client sends sender, Arkiv nonce, and Operation[] payload to one provider.
-2. Provider validates, canonicalizes, computes payloadHash, stores by hash, and
-   returns payloadHash + certificate.
+1. Client sends sender, Arkiv nonce, and Operation[] payload to one payload
+   provider.
+2. Payload provider validates, canonicalizes, computes payloadHash, stores by
+   hash, and returns payloadHash + certificate.
 3. Client signs tx: commit(payloadHash, certificate).
 4. Client submits the signed tx through standard RPC.
 5. Precompile verifies certificate, bumps Arkiv nonce, emits commitment.
-6. Projector watches finalized commitments.
-7. Projector fetches payload, verifies hash/envelope, applies ops in chain order.
+6. DB provider/projector watches finalized commitments.
+7. DB provider/projector fetches payload, verifies hash/envelope, applies ops in
+   chain order.
 ```
 
-The tx never fetches the payload; it validates only the provider certificate.
+The tx never fetches the payload; it validates only the payload-provider certificate.
 That certificate is the centralized v1 claim that the payload exists and passed
 validation. Transaction propagation remains the standard blockchain RPC/mempool
 path; payload availability is enforced by requiring a valid provider certificate
@@ -85,7 +90,7 @@ Precompile validation:
 - certificate is not expired.
 
 On success, the precompile bumps the sender's Arkiv nonce and emits
-`PayloadCommitted`, including `providerId` for auditability.
+`PayloadCommitted`, including payload `providerId` for auditability.
 
 ## Canonical Data
 
@@ -130,13 +135,14 @@ replay across chains, deployments, accounts, nonces, provider identities, and
 future incompatible payload schemas. The provider, not the client, is the
 source of truth for the canonical bytes and `payloadHash`.
 
-## Availability Providers
+## Payload Providers
 
-V1 trusts a configured set of centralized providers. Each provider exposes the
-same API, validates payloads independently, stores accepted payloads, and signs
-certificates with its own private key. With the initial "any active provider"
-policy, clients can choose a provider and one unavailable provider does not
-halt writes while another active provider can certify payloads.
+V1 trusts a configured set of centralized payload providers. Each provider
+exposes the same API, validates payloads independently, stores accepted
+payloads, and signs certificates with its own private key. With the initial
+"any active provider" policy, clients can choose a provider and one unavailable
+provider does not halt writes while another active provider can certify
+payloads.
 
 Provider-set configuration options:
 
@@ -159,7 +165,7 @@ GET /payload/{payloadHash}
 
 1. verify the requested `(sender, nonce)` has not already been accepted;
 2. validate payload schema;
-3. validate operation semantics against provider DB/projection state;
+3. validate operation semantics against provider validation state;
 4. canonicalize `(sender, nonce, payload)` into the payload envelope;
 5. compute `payloadHash`;
 6. store payload by hash and mark `(sender, nonce)` as accepted;
@@ -174,9 +180,9 @@ Including `sender` and Arkiv nonce in the canonical payload makes otherwise
 identical Operation[] payloads distinct across account sequences. A provider
 must not issue two different certificates for the same `(sender, nonce)`.
 
-## Projector
+## DB Provider / Projector
 
-For each finalized `PayloadCommitted` event, the projector:
+For each finalized `PayloadCommitted` event, the DB provider/projector:
 
 1. fetches payload bytes by `payloadHash`;
 2. recomputes and verifies the hash;
@@ -184,7 +190,7 @@ For each finalized `PayloadCommitted` event, the projector:
 4. applies operations in canonical chain order;
 5. records applied/rejected/missing status.
 
-The projector should wait for a configurable finality depth or finality signal.
+The DB provider/projector should wait for a configurable finality depth or finality signal.
 If it applies before finality, it must support reorg rollback.
 
 ## Invalid Payloads
@@ -202,15 +208,15 @@ full operation payload; it validates only the certificate and committed fields.
 With centralized availability, the chain proves only:
 
 - sender committed to `payloadHash`;
-- an active trusted provider signed for that hash;
+- an active trusted payload provider signed for that hash;
 - commitment order and nonce are canonical.
 
 It does not independently prove permanent retrievability. V1 trust model:
 
 ```text
-Blockchain trusts the active provider key set for availability + pre-validation.
-DB projection trusts finalized chain order.
-Clients trust the provider that certified a payload to keep it retrievable.
+Blockchain trusts the active payload-provider key set for availability + pre-validation.
+DB providers trust finalized chain order.
+Clients trust the payload provider that certified a payload to keep it retrievable.
 ```
 
 Multiple centralized providers improve redundancy but are not trustless if one
@@ -219,7 +225,7 @@ bonded service, challenge protocol, or external data-availability proof.
 
 ## Test Plan
 
-Provider validation:
+Payload provider validation:
 
 - valid create payload is accepted, stored, and certified;
 - malformed payload is rejected;
@@ -246,7 +252,7 @@ Precompile/transaction:
 - expired certificate reverts;
 - reused certificate/nonce reverts.
 
-Projector:
+DB provider/projector:
 
 - reads committed events from finalized blocks;
 - fetches payload by hash;

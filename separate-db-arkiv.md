@@ -2,68 +2,57 @@
 
 Status: draft design note.
 
-This document describes the intended direction for separating Arkiv's
-database workload from Ethereum execution state. The current implementation
-stores entity payloads, entity metadata, annotation bitmaps, range indexes,
-nonces, and ID maps directly in EVM account code/storage. That gives strong
-state-root commitment semantics, but it also routes every DB mutation through
-the slowest part of the execution stack: revm journaling, account/code writes,
-trie updates, historical state, and block execution.
-
-The desired architecture is:
+Arkiv should move entity payloads, metadata, annotation bitmaps, range indexes,
+nonces, and ID maps out of EVM account code/storage. The current trie-backed
+model gives state-root commitment semantics, but forces DB writes through revm
+journaling, account/code writes, trie updates, historical state, and block
+execution. The new split:
 
 ```text
-Payload service / DB
-  stores full operations and materializes query indexes
-
-Blockchain
-  stores ordering, sender authorization, nonce, and payload hash commitments
+Payload service / DB: stores Operation[] payloads and materializes query indexes
+Blockchain: stores ordering, sender authorization, nonce, and payload hashes
 ```
 
-The chain becomes an ordered commitment log. The external Arkiv service
-becomes the high-performance database and query engine.
+The chain is an ordered commitment log; the external Arkiv service is the
+high-performance database and query engine.
 
-## Goals
+## Scope
 
-- Remove entity payload and index writes from EVM state.
-- Keep blockchain ordering and sender authentication.
-- Commit every DB mutation request by hash on-chain.
-- Require centralized payload availability and validation for the first
-  version.
-- Support multiple centralized availability providers, each with its own
-  signing key.
-- Leave room to replace the centralized availability provider set with a
-  decentralized data-availability solution later.
+Goals:
 
-## Non-goals for v1
+- remove entity payload and index writes from EVM state;
+- keep blockchain ordering and sender authentication;
+- commit every DB mutation request by hash on-chain;
+- require centralized payload availability and validation in v1;
+- support multiple centralized availability providers, each with its own
+  signing key;
+- allow a later move to decentralized data availability.
 
-- Decentralized payload availability.
-- Trustless proof that the external DB applied every valid payload.
-- Storing full operation payloads in calldata, blobs, or EVM storage.
-- Preserving the current "all Arkiv data lives in stateRoot" property.
+Non-goals for v1:
 
-## High-Level Flow
+- decentralized payload availability;
+- trustless proof that the external DB applied every valid payload;
+- full payloads in calldata, blobs, or EVM storage;
+- preserving the current "all Arkiv data lives in stateRoot" property.
+
+## Flow
 
 ```text
 1. Client canonical-encodes Operation[].
 2. Client computes payloadHash.
-3. Client uploads the payload to one centralized availability provider.
-4. Availability provider validates the payload and stores it by hash.
-5. Availability provider signs an availability/validation certificate.
-6. Client sends a blockchain tx containing payloadHash + certificate.
-7. Arkiv precompile verifies the certificate and emits a commitment event.
-8. DB projector watches finalized chain commitments.
-9. DB projector fetches payload by hash, verifies the hash, and applies ops
-   in finalized chain order.
+3. Client uploads payload to one availability provider.
+4. Provider validates, stores by hash, and signs a certificate.
+5. Client sends tx: commit(payloadHash, certificate).
+6. Precompile verifies certificate, bumps Arkiv nonce, emits commitment.
+7. Projector watches finalized commitments.
+8. Projector fetches payload, verifies hash/envelope, applies ops in chain order.
 ```
 
-The transaction must not fetch the payload from a provider. The transaction
-only verifies the signed certificate. The certificate is the centralized v1
-claim that the payload exists and has passed validation.
+The tx never fetches the payload; it validates only the provider certificate.
+That certificate is the centralized v1 claim that the payload exists and passed
+validation.
 
 ## On-Chain Surface
-
-The minimal precompile/ABI surface should be a commitment entry point:
 
 ```solidity
 function commit(bytes32 payloadHash, AvailabilityCertificate cert) external;
@@ -76,34 +65,29 @@ event PayloadCommitted(
 );
 ```
 
-The exact Solidity type for `AvailabilityCertificate` can be chosen during
-implementation. At minimum it needs to carry signed data and the signer
-identity or recoverable signature.
+`AvailabilityCertificate` must carry signed data plus signer identity or a
+recoverable signature. The precompile must know the active provider set. V1 can
+accept any one active provider signature; each provider has an independent
+private key and stable `providerId`.
 
-The precompile must know the active provider set. For v1, the acceptance
-policy can be "any one active provider signature is sufficient." Each provider
-has an independent private key and a stable provider ID. The provider ID should
-be included in the signed certificate and emitted in the commitment event so
-callers can audit which provider accepted the payload.
+Precompile validation:
 
-The precompile should validate:
+- `providerId` is active;
+- signature recovers to the active key for `providerId`;
+- `chainId` matches the current chain;
+- `registry` equals `ARKIV_ADDRESS`;
+- `sender` equals `msg.sender`;
+- `nonce` equals the current Arkiv nonce for `msg.sender`;
+- `payloadHash` equals the submitted hash;
+- certificate version/schema is supported;
+- certificate is not expired.
 
-- certificate `providerId` is active under the configured provider set;
-- certificate signature recovers to the active provider key for `providerId`;
-- certificate `chainId` equals the current chain ID;
-- certificate `registry` equals `ARKIV_ADDRESS`;
-- certificate `sender` equals `msg.sender`;
-- certificate `nonce` equals the current Arkiv nonce for `msg.sender`;
-- certificate `payloadHash` equals the submitted `payloadHash`;
-- certificate schema/version is supported;
-- certificate has not expired.
+On success, the precompile bumps the sender's Arkiv nonce and emits
+`PayloadCommitted`, including `providerId` for auditability.
 
-If validation succeeds, the precompile bumps the sender's Arkiv nonce and
-emits `PayloadCommitted`.
+## Canonical Data
 
-## Certificate Payload
-
-The signed certificate message should bind:
+Certificate message fields:
 
 ```text
 version
@@ -118,23 +102,7 @@ payload schema version
 expiry block or timestamp
 ```
 
-This prevents replay across chains, deployments, accounts, nonces, and
-future incompatible payload schemas.
-
-The signed bytes should be domain separated. For example:
-
-```text
-arkiv.availability.v1 || canonical_certificate_bytes
-```
-
-Implementation can use EIP-712 typed data or a simpler fixed canonical
-encoding, but the encoding must be deterministic and specified.
-
-## Payload Hashing
-
-The payload hash must be computed over canonical bytes, not ad hoc JSON text.
-
-Recommended payload envelope:
+Payload envelope fields:
 
 ```text
 version
@@ -145,34 +113,35 @@ arkiv nonce
 operations
 ```
 
-Then:
+Hashing/signing:
 
 ```text
 payloadHash = keccak256("arkiv.payload.v1" || canonical_payload_bytes)
+certificateSignedBytes = "arkiv.availability.v1" || canonical_certificate_bytes
 ```
 
-The availability provider and DB projector must recompute this hash before
-accepting or applying a payload.
+Canonical encoding must be deterministic and specified. EIP-712 typed data is
+acceptable; so is a simpler fixed binary encoding. Provider and projector must
+recompute `payloadHash`. The certificate binds chain, deployment, account,
+nonce, payload hash/length, schema version, expiry, and provider ID to prevent
+replay across chains, deployments, accounts, nonces, provider identities, and
+future incompatible payload schemas.
 
 ## Availability Providers
 
-For v1, Arkiv can trust a configured set of centralized availability
-providers. Each provider runs the same API, validates payloads independently,
-stores accepted payloads, and signs certificates with its own private key.
+V1 trusts a configured set of centralized providers. Each provider exposes the
+same API, validates payloads independently, stores accepted payloads, and signs
+certificates with its own private key. With the initial "any active provider"
+policy, clients can choose a provider and one unavailable provider does not
+halt writes while another active provider can certify payloads.
 
-The initial on-chain policy can accept a certificate from any active provider.
-This keeps the write path simple while allowing operational redundancy: clients
-can choose the provider they use, and one unavailable provider does not halt
-the system as long as another active provider can certify payloads.
-
-The provider set needs governance/configuration outside the payload itself.
-Implementation options include:
+Provider-set configuration options:
 
 - compile-time or genesis-configured provider keys for the first devnet;
 - chainspec/config-file provider keys loaded by `arkiv-node`;
-- a future on-chain or operator-managed provider registry.
+- future on-chain or operator-managed provider registry.
 
-Each provider should expose at least:
+Provider API:
 
 ```text
 POST /payload
@@ -183,26 +152,21 @@ GET /payload/{payloadHash}
   response: canonical payload bytes
 ```
 
-On `POST /payload`, the provider:
+`POST /payload` behavior:
 
-1. canonicalizes or verifies the submitted canonical payload;
-2. recomputes `payloadHash`;
-3. validates payload schema;
-4. validates operation semantics against its current DB/projection state;
-5. stores the payload by hash;
-6. returns a signed certificate.
+1. canonicalize or verify canonical payload bytes;
+2. recompute `payloadHash`;
+3. validate payload schema;
+4. validate operation semantics against provider DB/projection state;
+5. store payload by hash;
+6. return signed certificate.
 
 Validation can initially be centralized and stateful. Invalid payloads are
-rejected before the client sends the blockchain transaction.
+rejected before the blockchain tx. Providers should use independent private
+keys. Key rotation is a provider-set update: add the new key, wait for clients
+to switch, then deactivate the old key after outstanding certificates expire.
 
-Providers should use independent private keys. Key rotation should be modeled
-as provider-set updates: add the new key as active, wait for clients to switch,
-then deactivate the old key after outstanding certificates expire.
-
-## DB Projector
-
-The projector is responsible for turning finalized on-chain commitments into
-database mutations.
+## Projector
 
 For each finalized `PayloadCommitted` event, the projector:
 
@@ -212,34 +176,28 @@ For each finalized `PayloadCommitted` event, the projector:
 4. applies operations in canonical chain order;
 5. records applied/rejected/missing status.
 
-The projector should wait for a configurable finality depth or finality signal
-before applying mutations. If it applies before finality, it must support reorg
-rollback.
+The projector should wait for a configurable finality depth or finality signal.
+If it applies before finality, it must support reorg rollback.
 
 ## Invalid Payloads
 
-There are two classes of invalid payload handling:
+- Before tx: the provider rejects malformed or semantically invalid payloads
+  and refuses to issue a certificate.
+- During tx: the precompile rejects invalid certificates, wrong provider,
+  sender, nonce, chain, registry, hash, version/schema, or expiry.
 
-- Before tx: the centralized availability provider rejects malformed or
-  semantically invalid payloads and refuses to issue a certificate.
-- During tx: the precompile rejects invalid certificates, wrong sender, wrong
-  nonce, wrong chain, wrong registry, hash mismatch, unsupported version, or
-  expiry.
+Because the tx contains only `payloadHash`, the precompile cannot validate the
+full operation payload; it validates only the certificate and committed fields.
 
-The precompile cannot validate the full operation payload if the tx only
-contains `payloadHash`. It can only validate the certificate and fields
-committed in the tx.
+## Trust And Availability
 
-## Availability Risk
+With centralized availability, the chain proves only:
 
-With centralized availability, the chain only proves:
+- sender committed to `payloadHash`;
+- an active trusted provider signed for that hash;
+- commitment order and nonce are canonical.
 
-- a sender committed to a payload hash;
-- an active trusted provider signed a certificate for that hash;
-- the commitment order and nonce are canonical.
-
-The chain does not independently prove that the payload remains retrievable
-forever. The v1 trust model is therefore:
+It does not independently prove permanent retrievability. V1 trust model:
 
 ```text
 Blockchain trusts the active provider key set for availability + pre-validation.
@@ -247,15 +205,13 @@ DB projection trusts finalized chain order.
 Clients trust the provider that certified a payload to keep it retrievable.
 ```
 
-Multiple centralized providers improve operational redundancy, but they do not
-make availability trustless if the on-chain policy accepts one provider
-signature. Later, the acceptance policy can move from "any one active provider"
-to a quorum certificate, bonded service, challenge protocol, or external
-data-availability proof.
+Multiple centralized providers improve redundancy but are not trustless if one
+active signature is enough. Later, the policy can become a quorum certificate,
+bonded service, challenge protocol, or external data-availability proof.
 
 ## Test Plan
 
-Provider validation tests:
+Provider validation:
 
 - valid create payload is accepted, stored, and certified;
 - malformed payload is rejected;
@@ -266,13 +222,13 @@ Provider validation tests:
 - payload hash mismatch is rejected;
 - unsupported payload schema version is rejected.
 
-Precompile/transaction tests:
+Precompile/transaction:
 
 - valid hash plus valid certificate succeeds and emits `PayloadCommitted`;
 - certificate signed by wrong key reverts;
-- certificate from unknown provider ID reverts;
-- certificate from deactivated provider ID reverts;
-- certificate signed by provider A but labeled as provider B reverts;
+- unknown provider ID reverts;
+- deactivated provider ID reverts;
+- provider A signature labeled as provider B reverts;
 - certificate sender different from `msg.sender` reverts;
 - certificate nonce different from current Arkiv nonce reverts;
 - certificate chain ID different from current chain reverts;
@@ -281,7 +237,7 @@ Precompile/transaction tests:
 - expired certificate reverts;
 - reused certificate/nonce reverts.
 
-Projector tests:
+Projector:
 
 - reads committed events from finalized blocks;
 - fetches payload by hash;
@@ -291,17 +247,3 @@ Projector tests:
 - records missing payload without applying it;
 - handles duplicate commitments according to nonce rules;
 - handles reorg rollback or waits for finality before applying.
-
-## Migration Direction
-
-The safest implementation path is additive:
-
-1. Add `commit(bytes32, certificate)` beside the existing
-   `execute(Operation[])` path.
-2. Implement one centralized availability provider, then generalize to the
-   configured provider set before production use.
-3. Move CLI and SDK write flows to payload upload + commitment tx.
-4. Keep the old trie-backed execution path only for compatibility during
-   migration.
-5. Remove or disable direct state-trie entity writes once the separate DB path
-   is proven.

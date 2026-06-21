@@ -20,7 +20,7 @@ permissions:
   packages: write
 
 env:
-  ORG: arkiv-network
+  ORG: atlas-chain
   # Default lifetime (in hours) for versions whose tags are only commit hashes.
   # Used by the scheduled run; the manual run can override via the workflow input.
   DEFAULT_LIFETIME_HOURS: "72"

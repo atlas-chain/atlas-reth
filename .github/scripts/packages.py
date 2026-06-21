@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""List and prune GHCR container packages for the Arkiv org.
+"""List and prune GHCR container packages for the Atlas Chain org.
 
 Reads `GH_TOKEN` from the environment for `gh api` calls. The org defaults to
-`arkiv-network` and can be overridden via `--org` or the `ORG` env var.
+`atlas-chain` and can be overridden via `--org` or the `ORG` env var.
 
 Versions tagged only by commit hash (or untagged) are considered ephemeral and
 expire after `--lifetime-hours` (default 72). Listing always shows the time
@@ -20,7 +20,7 @@ import sys
 import urllib.parse
 
 
-DEFAULT_ORG = "arkiv-network"
+DEFAULT_ORG = "atlas-chain"
 DEFAULT_LIFETIME_HOURS = 72
 COMMIT_TAG_MIN_LEN = 7
 

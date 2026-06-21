@@ -212,9 +212,9 @@ jobs:
           chmod +x "$staging_dir"/*
 
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            archive_basename="arkiv-op-reth-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.tar.xz"
+            archive_basename="arkiv-node-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.tar.xz"
           else
-            archive_basename="arkiv-op-reth-production-linux-${{ matrix.arch }}-${GITHUB_SHA}.tar.xz"
+            archive_basename="arkiv-node-production-linux-${{ matrix.arch }}-${GITHUB_SHA}.tar.xz"
           fi
           archive="${RUNNER_TEMP}/${archive_basename}"
 
@@ -237,7 +237,7 @@ jobs:
             -F "commit=${GITHUB_SHA}" \
             -F "binaries=arkiv-node" \
             -F "binaries=arkiv-cli" \
-            -F "name=arkiv-op-reth-production-linux-${{ matrix.arch }}" \
+            -F "name=arkiv-node-production-linux-${{ matrix.arch }}" \
             -F "description=Full production binary build (${{ matrix.arch }}) for ${GITHUB_REF_NAME}" \
             -F "file=@${{ steps.pack.outputs.archive }};type=application/x-xz"
 

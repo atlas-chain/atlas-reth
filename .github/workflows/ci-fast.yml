@@ -199,9 +199,9 @@ jobs:
           chmod +x "$staging_dir"/*
 
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            archive_basename="arkiv-op-reth-${GITHUB_REF_NAME}-integration-tests.tar.gz"
+            archive_basename="arkiv-node-${GITHUB_REF_NAME}-integration-tests.tar.gz"
           else
-            archive_basename="arkiv-op-reth-integration-tests-linux-amd64-${GITHUB_SHA}.tar.gz"
+            archive_basename="arkiv-node-integration-tests-linux-amd64-${GITHUB_SHA}.tar.gz"
           fi
           archive="${RUNNER_TEMP}/${archive_basename}"
 
@@ -223,7 +223,7 @@ jobs:
             -F "commit=${GITHUB_SHA}" \
             -F "binaries=arkiv-node-int" \
             -F "binaries=arkiv-cli-int" \
-            -F "name=arkiv-op-reth-integration-tests-linux-amd64" \
+            -F "name=arkiv-node-integration-tests-linux-amd64" \
             -F "description=Fast integration-test binary build for ${GITHUB_REF_NAME}" \
             -F "file=@${{ steps.pack.outputs.archive }};type=application/gzip"
 

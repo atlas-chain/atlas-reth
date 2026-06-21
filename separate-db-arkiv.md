@@ -38,15 +38,14 @@ Non-goals for v1:
 ## Flow
 
 ```text
-1. Client canonical-encodes Operation[].
-2. Client computes payloadHash.
-3. Client sends payload to one provider.
-4. Provider validates, stores by hash, and returns a certificate.
-5. Client signs tx: commit(payloadHash, certificate).
-6. Client submits the signed tx through standard RPC.
-7. Precompile verifies certificate, bumps Arkiv nonce, emits commitment.
-8. Projector watches finalized commitments.
-9. Projector fetches payload, verifies hash/envelope, applies ops in chain order.
+1. Client sends sender, Arkiv nonce, and Operation[] payload to one provider.
+2. Provider validates, canonicalizes, computes payloadHash, stores by hash, and
+   returns payloadHash + certificate.
+3. Client signs tx: commit(payloadHash, certificate).
+4. Client submits the signed tx through standard RPC.
+5. Precompile verifies certificate, bumps Arkiv nonce, emits commitment.
+6. Projector watches finalized commitments.
+7. Projector fetches payload, verifies hash/envelope, applies ops in chain order.
 ```
 
 The tx never fetches the payload; it validates only the provider certificate.
@@ -124,11 +123,12 @@ certificateSignedBytes = "arkiv.availability.v1" || canonical_certificate_bytes
 ```
 
 Canonical encoding must be deterministic and specified. EIP-712 typed data is
-acceptable; so is a simpler fixed binary encoding. Provider and projector must
-recompute `payloadHash`. The certificate binds chain, deployment, account,
+acceptable; so is a simpler fixed binary encoding. The provider computes
+`payloadHash`; the projector recomputes it. The certificate binds chain, deployment, account,
 nonce, payload hash/length, schema version, expiry, and provider ID to prevent
 replay across chains, deployments, accounts, nonces, provider identities, and
-future incompatible payload schemas.
+future incompatible payload schemas. The provider, not the client, is the
+source of truth for the canonical bytes and `payloadHash`.
 
 ## Availability Providers
 
@@ -148,7 +148,7 @@ Provider API:
 
 ```text
 POST /payload
-  request: canonical payload bytes or structured payload envelope
+  request: sender + Arkiv nonce + Operation[] payload
   response: payloadHash + signed AvailabilityCertificate
 
 GET /payload/{payloadHash}
@@ -157,17 +157,22 @@ GET /payload/{payloadHash}
 
 `POST /payload` behavior:
 
-1. canonicalize or verify canonical payload bytes;
-2. recompute `payloadHash`;
-3. validate payload schema;
-4. validate operation semantics against provider DB/projection state;
-5. store payload by hash;
-6. return signed certificate.
+1. verify the requested `(sender, nonce)` has not already been accepted;
+2. validate payload schema;
+3. validate operation semantics against provider DB/projection state;
+4. canonicalize `(sender, nonce, payload)` into the payload envelope;
+5. compute `payloadHash`;
+6. store payload by hash and mark `(sender, nonce)` as accepted;
+7. return `payloadHash` plus signed certificate.
 
 Validation can initially be centralized and stateful. Invalid payloads are
 rejected before the blockchain tx. Providers should use independent private
 keys. Key rotation is a provider-set update: add the new key, wait for clients
 to switch, then deactivate the old key after outstanding certificates expire.
+
+Including `sender` and Arkiv nonce in the canonical payload makes otherwise
+identical Operation[] payloads distinct across account sequences. A provider
+must not issue two different certificates for the same `(sender, nonce)`.
 
 ## Projector
 
@@ -222,7 +227,8 @@ Provider validation:
 - invalid `Ident32` is rejected;
 - zero-BTL create is rejected;
 - unauthorized update/delete is rejected when stateful validation is enabled;
-- payload hash mismatch is rejected;
+- canonicalization/hash recomputation is deterministic;
+- duplicate `(sender, nonce)` is rejected;
 - unsupported payload schema version is rejected.
 
 Precompile/transaction:

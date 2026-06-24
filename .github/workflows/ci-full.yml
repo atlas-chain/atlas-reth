@@ -321,6 +321,8 @@ jobs:
     steps:
       - name: Checkout atlas-reth
         uses: actions/checkout@v6
+        with:
+          path: atlas-reth
 
       - name: Checkout atlas-payload-provider
         uses: actions/checkout@v6
@@ -330,7 +332,7 @@ jobs:
           path: atlas-payload-provider
           token: ${{ secrets.ATLAS_PAYLOAD_PROVIDER_TOKEN || github.token }}
 
-      - uses: ./.github/actions/docker-setup
+      - uses: ./atlas-reth/.github/actions/docker-setup
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -361,7 +363,7 @@ jobs:
           PAYLOAD_PROVIDER_BIN: ${{ github.workspace }}/atlas-payload-provider/target/debug/atlas-payload-provider
           PAYLOAD_REFERENCE_SMOKE_DIR: ${{ runner.temp }}/payload-reference-smoke-full
           PAYLOAD_REFERENCE_IMAGE_BIN_DIR: ${{ runner.temp }}/payload-reference-image-binaries-full
-        run: scripts/payload-reference-smoke-from-image.sh ghcr.io/atlas-chain/arkiv-node-dev:${{ github.sha }}-amd64
+        run: atlas-reth/scripts/payload-reference-smoke-from-image.sh ghcr.io/atlas-chain/arkiv-node-dev:${{ github.sha }}-amd64
 
       - name: Upload payload-reference smoke logs
         if: always()

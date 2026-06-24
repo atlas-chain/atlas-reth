@@ -45,6 +45,12 @@ library Entity {
     uint8 internal constant ATTR_STRING = 2;
     uint8 internal constant ATTR_ENTITY_KEY = 3;
 
+    /// @dev `Operation.contentType` value that tells the precompile to
+    /// interpret `Operation.payload` as an Atlas payload-provider reference
+    /// JSON document instead of inline entity bytes.
+    string internal constant PAYLOAD_REFERENCE_CONTENT_TYPE =
+        "application/vnd.atlas.payload-reference+json";
+
     struct Attribute {
         Ident32 name;
         uint8 valueType;
@@ -91,6 +97,34 @@ library Entity {
     /// byte (0..127) and `value` is the byte itself. Mirrors
     /// `Ident32InvalidByte`'s shape.
     error AttributeStringInvalidByte(bytes32 name, uint256 position, bytes1 value);
+
+    /// @dev Payload-reference JSON is not valid v1 reference data.
+    error PayloadReferenceMalformed();
+
+    /// @dev Payload-reference version is not supported by this
+    /// precompile revision.
+    error PayloadReferenceUnsupportedVersion(uint256 version);
+
+    /// @dev The declared provider/service is not a consensus-trusted
+    /// provider identity.
+    error PayloadProviderUnknown(string provider);
+
+    /// @dev The recovered provider signer is not in the consensus
+    /// signer allowlist.
+    error PayloadProviderSignerNotAllowed(address signer);
+
+    /// @dev The signed receipt does not match the outer reference
+    /// metadata.
+    error PayloadProviderReceiptMismatch();
+
+    /// @dev The provider signature is malformed, internally
+    /// inconsistent, has a bad message hash, or does not recover to
+    /// the declared signer.
+    error PayloadProviderSignatureInvalid();
+
+    /// @dev Reserved for callers that try to submit a payload reference
+    /// with a non-reference content type.
+    error PayloadReferenceContentTypeInvalid(bytes contentType);
 }
 
 /// @title IEntityRegistry

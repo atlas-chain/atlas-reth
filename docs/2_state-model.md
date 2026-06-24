@@ -134,7 +134,14 @@ The user-facing entry point and the EVM-side adapter to
   (entity exists / caller is owner / not expired / etc.). Failures
   return Solidity-style reverts using the standard error selectors
   (`Ident32Empty`, `NotOwner`, `EntityNotFound`, ...) so SDK error
-  decoders resolve them.
+  decoders resolve them. For `Create` / `Update`, if
+  `Operation.contentType` is exactly
+  `application/vnd.atlas.payload-reference+json`, `Operation.payload`
+  must be v1 Atlas payload-provider reference JSON. The precompile
+  parses that JSON, reconstructs the provider receipt, verifies the
+  EIP-191 signature, recovers the signer, and checks the recovered
+  signer against the consensus allowlist. It never calls the provider
+  or any other network service.
 - **Authorization.** Per-op, against `input.caller`:
   - `Create` — open to any EOA.
   - `Update` / `Extend` / `Transfer` / `Delete` — caller must equal
@@ -312,6 +319,60 @@ bitmaps.
 
 The full 32-byte `key` is in the RLP so callers with only the 20-byte
 address can recover the complete key.
+
+#### Inline and reference payloads
+
+For ordinary entities, `payload` is the raw inline byte payload and
+`content_type` is the MIME type supplied by the caller.
+
+For detached payloads, the caller uses the reserved content type
+`application/vnd.atlas.payload-reference+json`. In that mode,
+`payload` is the exact JSON reference bytes accepted by the
+precompile, not the original off-chain payload bytes. The v1 reference
+shape is:
+
+```json
+{
+  "kind": "atlas.payloadReference",
+  "version": 1,
+  "provider": "atlas-payload-provider",
+  "id": "<sha256(namespace || 0x00 || payload)>",
+  "namespace": "atlas.test",
+  "contentType": "text/plain",
+  "checksum": "sha256:<sha256(payload)>",
+  "sizeBytes": 42,
+  "submittedAt": "2026-06-24T15:24:30Z",
+  "signature": {
+    "scheme": "eip191",
+    "signer": "0x...",
+    "receipt": {
+      "service": "atlas-payload-provider",
+      "action": "payloadReceived",
+      "payloadId": "<same as id>",
+      "namespace": "<same as namespace>",
+      "checksum": "<same as checksum>",
+      "sizeBytes": 42,
+      "submittedAt": "<same as submittedAt>"
+    },
+    "messageHash": "0x...",
+    "signature": "0x<r><s><v>",
+    "r": "0x...",
+    "s": "0x...",
+    "v": 27
+  }
+}
+```
+
+The precompile verifies only the provider's signed payload metadata in
+v1. It does not prove that the provider signature is bound to the
+Arkiv entity key, attributes, expiry, owner, chain ID, or precompile
+address. A later provider signing scheme must bind those fields before
+the chain can treat the receipt as full operation-intent proof.
+
+Query and proof behavior remains byte-exact: `arkiv_query` returns the
+reference JSON as `value` when payload data is included, and
+`eth_getProof(entity_address)` commits to those exact reference bytes
+through the entity account `codeHash`.
 
 ### System Account
 
@@ -605,14 +666,14 @@ cost from calldata only and charges it via standard revm precompile
 gas accounting (`PrecompileOutput::new` for success,
 `halt(OutOfGas)` for budget exhaustion).
 
-| Op | Base | Per-byte | Per-annotation | Per indexed user attr |
-|---|---|---|---|---|
-| `Create` | `G_CREATE` | `G_BYTE = 16` × `(payload_bytes + annotation_bytes)` | `G_ANNOTATION = 5_000` | `G_ART_INDEXED_ANNOTATION = 6_000` |
-| `Update` | `G_UPDATE` | same | same | same |
-| `Extend` | `G_EXTEND` | — | — | — |
-| `Transfer` | `G_TRANSFER` | — | — | — |
-| `Delete` | `G_DELETE` | — | — | — |
-| `Expire` | `G_EXPIRE` | — | — | — |
+| Op | Base | Per-byte | Per-annotation | Per indexed user attr | Payload reference |
+|---|---|---|---|---|---|
+| `Create` | `G_CREATE` | `G_BYTE = 16` × `(payload_bytes + annotation_bytes)` | `G_ANNOTATION = 5_000` | `G_ART_INDEXED_ANNOTATION = 6_000` | `G_PAYLOAD_REFERENCE_VERIFY = 50_000` when content type is reserved |
+| `Update` | `G_UPDATE` | same | same | same | same |
+| `Extend` | `G_EXTEND` | — | — | — | — |
+| `Transfer` | `G_TRANSFER` | — | — | — | — |
+| `Delete` | `G_DELETE` | — | — | — | — |
+| `Expire` | `G_EXPIRE` | — | — | — | — |
 
 `annotation_bytes` is `annotation_count × (32 + 128)` — the max
 `Ident32` name plus the max `value128` payload per annotation. All

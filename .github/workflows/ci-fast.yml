@@ -295,6 +295,64 @@ jobs:
           image: ghcr.io/atlas-chain/arkiv-node-dev-int:${{ github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  payload-reference-smoke:
+    runs-on: ubuntu-latest
+    needs: [create-docker-image]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout atlas-reth
+        uses: actions/checkout@v6
+
+      - name: Checkout atlas-payload-provider
+        uses: actions/checkout@v6
+        with:
+          repository: atlas-chain/atlas-payload-provider
+          ref: codex/payload-nonce-payment
+          path: atlas-payload-provider
+          token: ${{ secrets.ATLAS_PAYLOAD_PROVIDER_TOKEN || github.token }}
+
+      - uses: ./.github/actions/docker-setup
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache payload-provider Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: payload-reference-provider
+          workspaces: |
+            atlas-payload-provider -> target
+
+      - name: Build payload provider
+        working-directory: atlas-payload-provider
+        run: cargo build --bin atlas-payload-provider
+
+      - name: Run payload-reference smoke against ci-fast image
+        env:
+          PAYLOAD_PROVIDER_DIR: ${{ github.workspace }}/atlas-payload-provider
+          PAYLOAD_PROVIDER_BIN: ${{ github.workspace }}/atlas-payload-provider/target/debug/atlas-payload-provider
+          PAYLOAD_REFERENCE_SMOKE_DIR: ${{ runner.temp }}/payload-reference-smoke-fast
+          PAYLOAD_REFERENCE_IMAGE_BIN_DIR: ${{ runner.temp }}/payload-reference-image-binaries-fast
+        run: scripts/payload-reference-smoke-from-image.sh ghcr.io/atlas-chain/arkiv-node-dev-int:${{ github.sha }}
+
+      - name: Upload payload-reference smoke logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: payload-reference-smoke-fast-logs
+          path: ${{ runner.temp }}/payload-reference-smoke-fast/*.log
+          if-no-files-found: ignore
+
   # Figure it out what it could do in current v3 version and if needed bring it back
   # demo-e2e-from-docker:
   #   runs-on: ubuntu-latest

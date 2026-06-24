@@ -107,9 +107,17 @@ the chain treats the receipt as a complete authorization proof.
   - Submits a payload to the provider, builds a v1 reference, proves a
     tampered signature is rejected, submits the valid reference on-chain,
     and verifies `arkiv_query` returns the exact reference bytes.
-- `.github/workflows/payload-reference-integration.yml`
-  - Builds `arkiv-node`, `arkiv-cli`, and `atlas-payload-provider`.
-  - Runs the smoke script in GitHub Actions against real local services.
+- `scripts/payload-reference-smoke-from-image.sh`
+  - Pulls a CI-produced Arkiv dev image, extracts `arkiv-node` and
+    `arkiv-cli`, and runs the same live smoke script with those binaries.
+- `.github/workflows/ci-fast.yml`
+  - Runs the payload-reference smoke against
+    `ghcr.io/atlas-chain/arkiv-node-dev-int:${{ github.sha }}` after the
+    fast Docker image is built.
+- `.github/workflows/ci-full.yml`
+  - Runs the payload-reference smoke against
+    `ghcr.io/atlas-chain/arkiv-node-dev:${{ github.sha }}-amd64` after the
+    full optimized Docker image is built.
 
 ## Verification
 
@@ -122,6 +130,7 @@ cargo test -p arkiv-node --test payload_reference_precompile
 cargo test -p arkiv-node
 cargo test -p arkiv-entitydb
 bash -n scripts/payload-reference-dev-chain-smoke.sh
+bash -n scripts/payload-reference-smoke-from-image.sh
 scripts/payload-reference-dev-chain-smoke.sh
 ```
 

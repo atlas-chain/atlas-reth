@@ -42,6 +42,8 @@ Atlas payload-provider references.
   "checksum": "sha256:<sha256(payload)>",
   "sizeBytes": 42,
   "submittedAt": "2026-06-24T15:24:30Z",
+  "nonce": "0x<32-byte nonce>",
+  "payment": 100000,
   "signature": {
     "scheme": "eip191",
     "signer": "0x...",
@@ -52,7 +54,9 @@ Atlas payload-provider references.
       "namespace": "<same as namespace>",
       "checksum": "<same as checksum>",
       "sizeBytes": 42,
-      "submittedAt": "<same as submittedAt>"
+      "submittedAt": "<same as submittedAt>",
+      "nonce": "<same as nonce>",
+      "payment": 100000
     },
     "messageHash": "0x...",
     "signature": "0x<r><s><v>",
@@ -65,11 +69,12 @@ Atlas payload-provider references.
 
 ## Important limitation
 
-The current provider receipt signs payload metadata only. It proves a
+The current provider receipt signs payload metadata plus a
+caller-scoped one-time nonce and a simple gas payment amount. It proves a
 trusted provider accepted bytes identified by payload ID, checksum,
-namespace, size, and timestamp. It does not yet bind the signature to
-Arkiv operation intent such as entity key, attributes, BTL/expiry,
-owner, chain ID, or `ARKIV_ADDRESS`.
+namespace, size, timestamp, nonce, and payment. It does not yet bind
+the signature to Arkiv operation intent such as entity key,
+attributes, BTL/expiry, owner, chain ID, or `ARKIV_ADDRESS`.
 
 That is acceptable for this v1 storage/reference step, but the next
 provider signing scheme should include full operation intent before
@@ -83,12 +88,14 @@ the chain treats the receipt as a complete authorization proof.
 - `crates/arkiv-node/src/precompile.rs`
   - Added v1 reference parsing and validation.
   - Added EIP-191 receipt verification and signer recovery.
-  - Added trusted signer allowlist and gas surcharge.
+  - Added trusted signer allowlist, nonce replay protection, and
+    signed payment gas surcharge.
   - Added unit tests for valid fixture, version mismatch, receipt
-    mismatch, signature tampering, MIME triggering, and gas accounting.
+    mismatch, signature tampering, nonce/payment validation, and gas
+    accounting.
 - `crates/arkiv-node/tests/payload_reference_precompile.rs`
   - Added direct EVM tests for successful signed-reference CREATE and
-    malformed-reference revert.
+    malformed/replayed-reference reverts.
 - `docs/2_state-model.md`
   - Documented inline/reference payload semantics, JSON shape, v1 proof
     limitation, and gas model.

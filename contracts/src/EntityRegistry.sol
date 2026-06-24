@@ -125,6 +125,13 @@ library Entity {
     /// @dev Reserved for callers that try to submit a payload reference
     /// with a non-reference content type.
     error PayloadReferenceContentTypeInvalid(bytes contentType);
+
+    /// @dev The caller already consumed this signed payload-reference
+    /// nonce.
+    error PayloadReferenceNonceUsed(bytes32 nonce);
+
+    /// @dev The signed payload-reference payment amount is invalid.
+    error PayloadReferencePaymentInvalid(uint256 payment);
 }
 
 /// @title IEntityRegistry

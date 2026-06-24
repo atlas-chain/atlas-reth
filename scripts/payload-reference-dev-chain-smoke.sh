@@ -19,6 +19,8 @@ PROVIDER_PORT="${PROVIDER_PORT:-28884}"
 PAYLOAD_PROVIDER_URL="http://${PROVIDER_HOST}:${PROVIDER_PORT}"
 
 CONTENT_TYPE="application/vnd.atlas.payload-reference+json"
+PAYLOAD_REFERENCE_NONCE="${PAYLOAD_REFERENCE_NONCE:-0x0000000000000000000000000000000000000000000000000000000000000001}"
+PAYLOAD_REFERENCE_PAYMENT="${PAYLOAD_REFERENCE_PAYMENT:-100000}"
 DEV_PRIVATE_KEY="${DEV_PRIVATE_KEY:-ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
 PROVIDER_SIGNER_PRIVATE_KEY="${PROVIDER_SIGNER_PRIVATE_KEY:-0x0000000000000000000000000000000000000000000000000000000000000001}"
 PROVIDER_SIGNER_ADDRESS="0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
@@ -180,15 +182,22 @@ provider_response="$(
     curl -fsS -X POST "${PAYLOAD_PROVIDER_URL}/arkiv/payloads" \
         -H 'content-type: application/json' \
         -H "authorization: Bearer ${INGRESS_BEARER_KEY}" \
-        --data "$(jq -nc --arg ns atlas.ci --arg ct text/plain --arg payload "$payload_b64" \
-            '{namespace:$ns,contentType:$ct,payloadBase64:$payload}')"
+        --data "$(jq -nc \
+            --arg ns atlas.ci \
+            --arg ct text/plain \
+            --arg payload "$payload_b64" \
+            --arg nonce "$PAYLOAD_REFERENCE_NONCE" \
+            --argjson payment "$PAYLOAD_REFERENCE_PAYMENT" \
+            '{namespace:$ns,contentType:$ct,payloadBase64:$payload,nonce:$nonce,payment:$payment}')"
 )"
 
-jq -e --arg signer "$PROVIDER_SIGNER_ADDRESS" '
+jq -e --arg signer "$PROVIDER_SIGNER_ADDRESS" --arg nonce "$PAYLOAD_REFERENCE_NONCE" --argjson payment "$PAYLOAD_REFERENCE_PAYMENT" '
     .ok == true
     and .payload.signature.scheme == "eip191"
     and (.payload.signature.signer | ascii_downcase) == $signer
     and .payload.signature.receipt.action == "payloadReceived"
+    and .payload.signature.receipt.nonce == $nonce
+    and .payload.signature.receipt.payment == $payment
 ' <<<"$provider_response" >/dev/null
 
 reference="$(
@@ -202,6 +211,8 @@ reference="$(
         checksum:.payload.checksum,
         sizeBytes:.payload.sizeBytes,
         submittedAt:.payload.submittedAt,
+        nonce:.payload.signature.receipt.nonce,
+        payment:.payload.signature.receipt.payment,
         signature:.payload.signature
     }' <<<"$provider_response"
 )"

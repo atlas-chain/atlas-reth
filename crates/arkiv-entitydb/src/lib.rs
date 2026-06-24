@@ -13,8 +13,9 @@
 //!   content-addressed in the trie.
 //! - **System account** (internal — see `SYSTEM_ACCOUNT_ADDRESS`) —
 //!   empty-coded account that hosts the global entity counter, the
-//!   per-caller `nonces` map, and the trie-committed ID ↔ address maps
-//!   as storage slots. Materialised lazily on the first write via
+//!   per-caller `nonces` map, consumed payload-reference nonces, and
+//!   the trie-committed ID ↔ address maps as storage slots.
+//!   Materialised lazily on the first write via
 //!   `StateAdapter::ensure_account_persists` — no genesis presence
 //!   required. Separate from the precompile's registration address
 //!   ([`ARKIV_ADDRESS`]) so the precompile itself stays a programmatic
@@ -57,8 +58,9 @@ pub const ARKIV_ADDRESS: Address = Address::new([
 ]);
 
 /// Address the precompile uses as a storage host — global entity
-/// counter, per-caller `nonces` map, and the trie-committed ID ↔
-/// address maps live here as storage slots. Materialised lazily on
+/// counter, per-caller `nonces` map, consumed payload-reference
+/// nonces, and the trie-committed ID ↔ address maps live here as
+/// storage slots. Materialised lazily on
 /// the first storage write via `StateAdapter::ensure_account_persists`
 /// (called from [`bump_nonce`]), which bumps the nonce to 1 so EIP-161
 /// doesn't prune the account at end-of-tx. No genesis allocation
@@ -175,6 +177,17 @@ pub(crate) fn slot_nonces(caller: Address) -> B256 {
     keccak256(buf)
 }
 
+/// `slot[keccak256("payload_ref_nonce" || caller_address || nonce)]`
+/// → bool consumed. Scoped by caller so two users can independently
+/// use the same random provider nonce without colliding.
+pub(crate) fn slot_payload_reference_nonce(caller: Address, nonce: B256) -> B256 {
+    let mut buf = [0u8; 17 + 20 + 32];
+    buf[..17].copy_from_slice(b"payload_ref_nonce");
+    buf[17..37].copy_from_slice(caller.as_slice());
+    buf[37..].copy_from_slice(nonce.as_slice());
+    keccak256(buf)
+}
+
 // ─── Public system-state accessors ────────────────────────────────────
 
 /// Read `caller`'s current entity-key minting nonce. Used by the
@@ -208,6 +221,35 @@ pub fn bump_nonce<S: StateAdapter>(state: &mut S, caller: Address) -> Result<u32
     buf[28..].copy_from_slice(&next.to_be_bytes());
     state.set_storage(&SYSTEM_ACCOUNT_ADDRESS, slot, B256::from(buf))?;
     Ok(current)
+}
+
+/// Returns true when `caller` has already consumed this signed
+/// payload-reference nonce.
+pub fn payload_reference_nonce_used<S: StateAdapter>(
+    state: &mut S,
+    caller: Address,
+    nonce: B256,
+) -> Result<bool> {
+    let raw = state.storage(
+        &SYSTEM_ACCOUNT_ADDRESS,
+        slot_payload_reference_nonce(caller, nonce),
+    )?;
+    Ok(raw != B256::ZERO)
+}
+
+/// Mark a signed payload-reference nonce as consumed for `caller`.
+/// Reverts cleanly through the precompile if the surrounding operation
+/// fails, because the write is part of the same EVM journal.
+pub fn consume_payload_reference_nonce<S: StateAdapter>(
+    state: &mut S,
+    caller: Address,
+    nonce: B256,
+) -> Result<()> {
+    state.ensure_account_persists(&SYSTEM_ACCOUNT_ADDRESS)?;
+    let slot = slot_payload_reference_nonce(caller, nonce);
+    let mut consumed = [0u8; 32];
+    consumed[31] = 1;
+    state.set_storage(&SYSTEM_ACCOUNT_ADDRESS, slot, B256::from(consumed))
 }
 
 // ─── Storage value encodings (for system-account slots) ──────────────

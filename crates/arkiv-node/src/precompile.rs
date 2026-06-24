@@ -111,6 +111,8 @@ sol! {
     error PayloadProviderReceiptMismatch();
     error PayloadProviderSignatureInvalid();
     error PayloadReferenceContentTypeInvalid(bytes contentType);
+    error PayloadReferenceNonceUsed(bytes32 nonce);
+    error PayloadReferencePaymentInvalid(uint256 payment);
 }
 
 // Op-type tags. Must match `Entity.{CREATE..EXPIRE}` in
@@ -150,6 +152,7 @@ const G_ART_INDEXED_ANNOTATION: u64 = 6_000;
 // reference-backed CREATE / UPDATE payloads. The branch is selected
 // from calldata content type, never state or network I/O.
 const G_PAYLOAD_REFERENCE_VERIFY: u64 = 50_000;
+const G_PAYLOAD_REFERENCE_DEFAULT_PAYMENT: u64 = 100_000;
 
 const PRECOMPILE_NAME: &str = "ARKIV";
 
@@ -353,7 +356,7 @@ fn apply_create(
     }
     validate_attribute_names(&op.attributes)?;
     let content_type = mime128_to_bytes(&op.contentType);
-    validate_payload_reference_if_needed(&op.payload, &content_type, chain_id)?;
+    validate_payload_reference_if_needed(input, caller, &op.payload, &content_type, chain_id)?;
 
     let expires_at = current_block.saturating_add(op.btl as u64);
     let attributes = convert_attributes(&op.attributes)?;
@@ -387,7 +390,7 @@ fn apply_update(
 ) -> Result<(), ApplyError> {
     validate_attribute_names(&op.attributes)?;
     let content_type = mime128_to_bytes(&op.contentType);
-    validate_payload_reference_if_needed(&op.payload, &content_type, chain_id)?;
+    validate_payload_reference_if_needed(input, caller, &op.payload, &content_type, chain_id)?;
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
     let attributes = convert_attributes(&op.attributes)?;
     {
@@ -614,7 +617,8 @@ fn validate_attribute_names(attrs: &[Attribute]) -> Result<(), ApplyError> {
 /// `application/vnd.atlas.payload-reference+json`.
 ///
 /// The signed receipt proves that a trusted provider accepted payload
-/// bytes identified by `(namespace, payloadId, checksum, sizeBytes)`.
+/// bytes identified by `(namespace, payloadId, checksum, sizeBytes)`
+/// for a caller-scoped one-time nonce and a simple gas payment amount.
 /// It deliberately does not prove the rest of the Arkiv operation
 /// intent; see `NEW-CONTRACT.md` for the next signing-scheme step.
 #[derive(Debug, Deserialize)]
@@ -630,6 +634,8 @@ struct PayloadReferenceJson {
     checksum: String,
     size_bytes: u64,
     submitted_at: String,
+    nonce: String,
+    payment: u64,
     signature: PayloadSignatureJson,
 }
 
@@ -660,20 +666,44 @@ struct PayloadReceiptJson {
     size_bytes: u64,
     #[serde(rename = "submittedAt")]
     submitted_at: String,
+    nonce: String,
+    payment: u64,
 }
 
 fn validate_payload_reference_if_needed(
+    input: &mut PrecompileInput<'_>,
+    caller: Address,
     payload: &[u8],
     content_type: &[u8],
     chain_id: u64,
 ) -> Result<(), ApplyError> {
     if content_type == PAYLOAD_REFERENCE_CONTENT_TYPE {
-        validate_payload_reference(payload, chain_id)?;
+        let auth = validate_payload_reference(payload, chain_id)?;
+        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
+        if arkiv_entitydb::payload_reference_nonce_used(&mut adapter, caller, auth.nonce)
+            .map_err(|e| ApplyError::Fatal(format!("read payload reference nonce: {e}")))?
+        {
+            return Err(ApplyError::Revert(
+                PayloadReferenceNonceUsed { nonce: auth.nonce }
+                    .abi_encode()
+                    .into(),
+            ));
+        }
+        arkiv_entitydb::consume_payload_reference_nonce(&mut adapter, caller, auth.nonce)
+            .map_err(|e| ApplyError::Fatal(format!("consume payload reference nonce: {e}")))?;
     }
     Ok(())
 }
 
-fn validate_payload_reference(payload: &[u8], chain_id: u64) -> Result<(), ApplyError> {
+#[derive(Debug, Clone, Copy)]
+struct PayloadReferenceAuth {
+    nonce: B256,
+}
+
+fn validate_payload_reference(
+    payload: &[u8],
+    chain_id: u64,
+) -> Result<PayloadReferenceAuth, ApplyError> {
     let reference: PayloadReferenceJson =
         serde_json::from_slice(payload).map_err(|_| payload_reference_malformed())?;
 
@@ -699,6 +729,8 @@ fn validate_payload_reference(payload: &[u8], chain_id: u64) -> Result<(), Apply
     validate_payload_checksum(&reference.checksum)?;
     validate_payload_size(reference.size_bytes)?;
     validate_submitted_at(&reference.submitted_at)?;
+    let nonce = validate_payload_reference_nonce(&reference.nonce)?;
+    validate_payload_reference_payment(reference.payment)?;
 
     let expected_receipt = PayloadReceiptJson {
         service: PAYLOAD_PROVIDER_SERVICE.to_string(),
@@ -708,8 +740,11 @@ fn validate_payload_reference(payload: &[u8], chain_id: u64) -> Result<(), Apply
         checksum: reference.checksum,
         size_bytes: reference.size_bytes,
         submitted_at: reference.submitted_at,
+        nonce: reference.nonce,
+        payment: reference.payment,
     };
-    validate_payload_signature(&expected_receipt, &reference.signature, chain_id)
+    validate_payload_signature(&expected_receipt, &reference.signature, chain_id)?;
+    Ok(PayloadReferenceAuth { nonce })
 }
 
 fn validate_payload_signature(
@@ -844,6 +879,27 @@ fn validate_payload_content_type(value: Option<&str>) -> Result<(), ApplyError> 
     } else {
         Err(payload_reference_malformed())
     }
+}
+
+fn validate_payload_reference_nonce(value: &str) -> Result<B256, ApplyError> {
+    let nonce = decode_prefixed_hex_32(value).map_err(|_| payload_reference_malformed())?;
+    if nonce == [0u8; 32] {
+        return Err(payload_reference_malformed());
+    }
+    Ok(B256::from(nonce))
+}
+
+fn validate_payload_reference_payment(payment: u64) -> Result<(), ApplyError> {
+    if payment == 0 {
+        return Err(ApplyError::Revert(
+            PayloadReferencePaymentInvalid {
+                payment: U256::ZERO,
+            }
+            .abi_encode()
+            .into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_payload_size(size_bytes: u64) -> Result<(), ApplyError> {
@@ -1044,7 +1100,7 @@ fn op_gas(op: &Operation) -> u64 {
         .count() as u64;
 
     let reference_verify = if mime128_to_bytes(&op.contentType) == PAYLOAD_REFERENCE_CONTENT_TYPE {
-        G_PAYLOAD_REFERENCE_VERIFY
+        G_PAYLOAD_REFERENCE_VERIFY.saturating_add(payload_reference_payment_gas(&op.payload))
     } else {
         0
     };
@@ -1054,6 +1110,19 @@ fn op_gas(op: &Operation) -> u64 {
         .saturating_add(annotation_count.saturating_mul(G_ANNOTATION))
         .saturating_add(indexed_count.saturating_mul(G_ART_INDEXED_ANNOTATION))
         .saturating_add(reference_verify)
+}
+
+fn payload_reference_payment_gas(payload: &[u8]) -> u64 {
+    #[derive(Deserialize)]
+    struct PaymentProbe {
+        payment: Option<u64>,
+    }
+
+    serde_json::from_slice::<PaymentProbe>(payload)
+        .ok()
+        .and_then(|probe| probe.payment)
+        .filter(|payment| *payment > 0)
+        .unwrap_or(G_PAYLOAD_REFERENCE_DEFAULT_PAYMENT)
 }
 
 // ─── Encoding helpers ────────────────────────────────────────────────
@@ -1266,14 +1335,16 @@ mod tests {
 
     #[test]
     fn payload_reference_fixture_verifies() {
-        validate_payload_reference(&payload_reference_fixture(), 1).expect("valid fixture");
+        validate_payload_reference(&payload_reference_fixture(), DEV_CHAIN_ID)
+            .expect("valid fixture");
     }
 
     #[test]
     fn payload_reference_requires_supported_version() {
         let mut reference = payload_reference_value();
         reference["version"] = serde_json::json!(2);
-        let err = validate_payload_reference(reference.to_string().as_bytes(), 1).unwrap_err();
+        let err =
+            validate_payload_reference(reference.to_string().as_bytes(), DEV_CHAIN_ID).unwrap_err();
         let bytes = match err {
             ApplyError::Revert(b) => b,
             ApplyError::Fatal(_) => panic!("expected revert"),
@@ -1290,7 +1361,8 @@ mod tests {
         reference["checksum"] = serde_json::json!(
             "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         );
-        let err = validate_payload_reference(reference.to_string().as_bytes(), 1).unwrap_err();
+        let err =
+            validate_payload_reference(reference.to_string().as_bytes(), DEV_CHAIN_ID).unwrap_err();
         let bytes = match err {
             ApplyError::Revert(b) => b,
             ApplyError::Fatal(_) => panic!("expected revert"),
@@ -1303,7 +1375,8 @@ mod tests {
         let mut reference = payload_reference_value();
         reference["signature"]["messageHash"] =
             serde_json::json!("0x0000000000000000000000000000000000000000000000000000000000000000");
-        let err = validate_payload_reference(reference.to_string().as_bytes(), 1).unwrap_err();
+        let err =
+            validate_payload_reference(reference.to_string().as_bytes(), DEV_CHAIN_ID).unwrap_err();
         let bytes = match err {
             ApplyError::Revert(b) => b,
             ApplyError::Fatal(_) => panic!("expected revert"),
@@ -1312,17 +1385,27 @@ mod tests {
     }
 
     #[test]
-    fn payload_reference_content_type_triggers_verification() {
-        let err = validate_payload_reference_if_needed(b"{}", PAYLOAD_REFERENCE_CONTENT_TYPE, 1)
-            .unwrap_err();
+    fn payload_reference_rejects_malformed_json() {
+        let err = validate_payload_reference(b"{}", DEV_CHAIN_ID).unwrap_err();
         let bytes = match err {
             ApplyError::Revert(b) => b,
             ApplyError::Fatal(_) => panic!("expected revert"),
         };
         assert_eq!(&bytes[..4], &PayloadReferenceMalformed::SELECTOR);
+    }
 
-        validate_payload_reference_if_needed(b"{}", b"application/json", 1)
-            .expect("non-reference MIME keeps inline behavior");
+    #[test]
+    fn payload_reference_rejects_zero_payment() {
+        let mut reference = payload_reference_value();
+        reference["payment"] = serde_json::json!(0);
+        reference["signature"]["receipt"]["payment"] = serde_json::json!(0);
+        let err =
+            validate_payload_reference(reference.to_string().as_bytes(), DEV_CHAIN_ID).unwrap_err();
+        let bytes = match err {
+            ApplyError::Revert(b) => b,
+            ApplyError::Fatal(_) => panic!("expected revert"),
+        };
+        assert_eq!(&bytes[..4], &PayloadReferencePaymentInvalid::SELECTOR);
     }
 
     #[test]
@@ -1385,7 +1468,7 @@ mod tests {
     }
 
     fn payload_reference_fixture() -> Vec<u8> {
-        br#"{"kind":"atlas.payloadReference","version":1,"provider":"atlas-payload-provider","id":"a806b74c6c933e9c0c3cfd7c099c7c6cdbf86bef1a48da310a90bd050c37b4e5","namespace":"atlas.test","contentType":"text/plain","checksum":"sha256:86a4700d6cf4c679fb010312f20e911e86beb1336e5b78ad8b02f1ac6e10c878","sizeBytes":42,"submittedAt":"2026-06-24T15:24:30Z","signature":{"scheme":"eip191","signer":"0xbdd23fd1bab3f4075edef4738d1d78a6bc5c236c","receipt":{"service":"atlas-payload-provider","action":"payloadReceived","payloadId":"a806b74c6c933e9c0c3cfd7c099c7c6cdbf86bef1a48da310a90bd050c37b4e5","namespace":"atlas.test","checksum":"sha256:86a4700d6cf4c679fb010312f20e911e86beb1336e5b78ad8b02f1ac6e10c878","sizeBytes":42,"submittedAt":"2026-06-24T15:24:30Z"},"messageHash":"0x3d89466d4e80c9dfee28158c8802d1750540d670ce2339afb339956718677d1b","signature":"0xddd862a7c78414936141b1279cf05390814534cc67dc9d2cadfd497c557e853b004cb80c547fabd8d6281497c0c4c134b82e34909d91cdfcccfdbc966d0b15051b","r":"0xddd862a7c78414936141b1279cf05390814534cc67dc9d2cadfd497c557e853b","s":"0x004cb80c547fabd8d6281497c0c4c134b82e34909d91cdfcccfdbc966d0b1505","v":27}}"#.to_vec()
+        br#"{"kind":"atlas.payloadReference","version":1,"provider":"atlas-payload-provider","id":"a806b74c6c933e9c0c3cfd7c099c7c6cdbf86bef1a48da310a90bd050c37b4e5","namespace":"atlas.test","contentType":"text/plain","checksum":"sha256:86a4700d6cf4c679fb010312f20e911e86beb1336e5b78ad8b02f1ac6e10c878","sizeBytes":42,"submittedAt":"2026-06-24T15:24:30Z","nonce":"0x0000000000000000000000000000000000000000000000000000000000000001","payment":100000,"signature":{"scheme":"eip191","signer":"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf","receipt":{"service":"atlas-payload-provider","action":"payloadReceived","payloadId":"a806b74c6c933e9c0c3cfd7c099c7c6cdbf86bef1a48da310a90bd050c37b4e5","namespace":"atlas.test","checksum":"sha256:86a4700d6cf4c679fb010312f20e911e86beb1336e5b78ad8b02f1ac6e10c878","sizeBytes":42,"submittedAt":"2026-06-24T15:24:30Z","nonce":"0x0000000000000000000000000000000000000000000000000000000000000001","payment":100000},"messageHash":"0xc26441853fe5760f4b5621649c8c0a2a7645b81793c3b367eb7f69f936736080","signature":"0x175505ad691cf7c80733ab39c0158d850182176090fc1365e71a13f61b2dadaa66e455ba88196d2a1570c326c3813cbc8e3b417ef79891db2ed934bdb4d687061b","r":"0x175505ad691cf7c80733ab39c0158d850182176090fc1365e71a13f61b2dadaa","s":"0x66e455ba88196d2a1570c326c3813cbc8e3b417ef79891db2ed934bdb4d68706","v":27}}"#.to_vec()
     }
 
     #[test]
@@ -1696,7 +1779,7 @@ mod tests {
 
     #[test]
     fn op_gas_charges_payload_reference_verification() {
-        let payload = Bytes::from_static(b"{}");
+        let payload = Bytes::from(payload_reference_fixture());
         let op = Operation {
             operationType: OP_CREATE,
             entityKey: B256::ZERO,
@@ -1708,7 +1791,24 @@ mod tests {
         };
         assert_eq!(
             op_gas(&op),
-            G_CREATE + (payload.len() as u64 * G_BYTE) + G_PAYLOAD_REFERENCE_VERIFY
+            G_CREATE
+                + (payload.len() as u64 * G_BYTE)
+                + G_PAYLOAD_REFERENCE_VERIFY
+                + G_PAYLOAD_REFERENCE_DEFAULT_PAYMENT
+        );
+    }
+
+    #[test]
+    fn payload_reference_payment_gas_reads_signed_payment_field() {
+        let mut reference = payload_reference_value();
+        reference["payment"] = serde_json::json!(123_456);
+        assert_eq!(
+            payload_reference_payment_gas(reference.to_string().as_bytes()),
+            123_456
+        );
+        assert_eq!(
+            payload_reference_payment_gas(b"{}"),
+            G_PAYLOAD_REFERENCE_DEFAULT_PAYMENT
         );
     }
 }

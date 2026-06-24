@@ -62,6 +62,9 @@ Minimum version 1 reference fields:
 - Payload size in bytes.
 - Payload content type.
 - Provider `submittedAt` timestamp from the signed receipt.
+- Caller-scoped one-time `nonce` as a nonzero 32-byte hex value.
+- Simple numeric `payment` gas amount, currently set by the SDK to
+  `100000`.
 - Full provider signature:
   - `scheme`
   - `signer`
@@ -88,7 +91,7 @@ For each reference-mode create/update, the precompile must validate:
 - The canonical receipt bytes match the payload-provider server format:
 
 ```json
-{"service":"atlas-payload-provider","action":"payloadReceived","payloadId":"<id>","namespace":"<namespace>","checksum":"sha256:<hex>","sizeBytes":123,"submittedAt":"<iso>"}
+{"service":"atlas-payload-provider","action":"payloadReceived","payloadId":"<id>","namespace":"<namespace>","checksum":"sha256:<hex>","sizeBytes":123,"submittedAt":"<iso>","nonce":"0x<bytes32>","payment":100000}
 ```
 
 - `messageHash == keccak256("\x19Ethereum Signed Message:\n" + len(receipt_bytes) + receipt_bytes)`.
@@ -96,6 +99,9 @@ For each reference-mode create/update, the precompile must validate:
 - `v` is 27 or 28.
 - Recovered signer address equals `signature.signer`.
 - Recovered signer is trusted for the declared provider.
+- The signed nonce has not already been consumed by the caller.
+- The precompile charges the signed `payment` value as extra gas in
+  addition to fixed reference verification gas.
 
 The provider trust check must be consensus-defined. Acceptable approaches:
 
@@ -109,7 +115,8 @@ trusted provider accepted the payload.
 
 ## Important Binding Limitation
 
-The current payload-provider receipt signs only payload metadata:
+The current payload-provider receipt signs payload metadata plus
+nonce/payment:
 
 - service
 - action
@@ -118,6 +125,8 @@ The current payload-provider receipt signs only payload metadata:
 - checksum
 - size
 - submitted timestamp
+- nonce
+- payment
 
 It does not sign the Arkiv entity key, attributes, expiration, owner, or content
 type outside the payload metadata.

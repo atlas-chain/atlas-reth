@@ -342,6 +342,8 @@ shape is:
   "checksum": "sha256:<sha256(payload)>",
   "sizeBytes": 42,
   "submittedAt": "2026-06-24T15:24:30Z",
+  "nonce": "0x<32-byte nonce>",
+  "payment": 100000,
   "signature": {
     "scheme": "eip191",
     "signer": "0x...",
@@ -352,7 +354,9 @@ shape is:
       "namespace": "<same as namespace>",
       "checksum": "<same as checksum>",
       "sizeBytes": 42,
-      "submittedAt": "<same as submittedAt>"
+      "submittedAt": "<same as submittedAt>",
+      "nonce": "<same as nonce>",
+      "payment": 100000
     },
     "messageHash": "0x...",
     "signature": "0x<r><s><v>",
@@ -363,11 +367,14 @@ shape is:
 }
 ```
 
-The precompile verifies only the provider's signed payload metadata in
-v1. It does not prove that the provider signature is bound to the
-Arkiv entity key, attributes, expiry, owner, chain ID, or precompile
-address. A later provider signing scheme must bind those fields before
-the chain can treat the receipt as full operation-intent proof.
+The precompile verifies the provider's signed payload metadata,
+caller-scoped one-time nonce, and simple gas payment amount in v1. It
+stores consumed nonces in the Arkiv system account so the same signed
+reference cannot be replayed by the same caller. It does not prove
+that the provider signature is bound to the Arkiv entity key,
+attributes, expiry, owner, chain ID, or precompile address. A later
+provider signing scheme must bind those fields before the chain can
+treat the receipt as full operation-intent proof.
 
 The production signer allowlist is consensus-defined in the
 precompile. Local development chain ID `1337` additionally trusts the
@@ -675,7 +682,7 @@ gas accounting (`PrecompileOutput::new` for success,
 
 | Op | Base | Per-byte | Per-annotation | Per indexed user attr | Payload reference |
 |---|---|---|---|---|---|
-| `Create` | `G_CREATE` | `G_BYTE = 16` × `(payload_bytes + annotation_bytes)` | `G_ANNOTATION = 5_000` | `G_ART_INDEXED_ANNOTATION = 6_000` | `G_PAYLOAD_REFERENCE_VERIFY = 50_000` when content type is reserved |
+| `Create` | `G_CREATE` | `G_BYTE = 16` × `(payload_bytes + annotation_bytes)` | `G_ANNOTATION = 5_000` | `G_ART_INDEXED_ANNOTATION = 6_000` | `G_PAYLOAD_REFERENCE_VERIFY = 50_000` + signed `payment` gas when content type is reserved |
 | `Update` | `G_UPDATE` | same | same | same | same |
 | `Extend` | `G_EXTEND` | — | — | — | — |
 | `Transfer` | `G_TRANSFER` | — | — | — | — |

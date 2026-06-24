@@ -20,6 +20,10 @@ Atlas payload-provider references.
 - The current allowlist contains the live Atlas payload-provider
   signer:
   `0xbdd23fd1bab3f4075edef4738d1d78a6bc5c236c`.
+- Chain ID `1337` additionally trusts the deterministic local test
+  signer `0x7e5f4552091a69125d5dfcb7b8c2659029395bdf` so GitHub
+  Actions can start a real local payload provider without production
+  signing secrets.
 - Reference-backed operations pay
   `G_PAYLOAD_REFERENCE_VERIFY = 50_000` in addition to the existing
   CREATE/UPDATE gas formula. The branch is selected only from calldata,
@@ -91,6 +95,14 @@ the chain treats the receipt as a complete authorization proof.
 - `docs/3_query.md`
   - Documented that query/proof results authenticate reference JSON
     bytes, not the original off-chain payload body.
+- `scripts/payload-reference-dev-chain-smoke.sh`
+  - Starts a local signed payload provider and Arkiv dev chain.
+  - Submits a payload to the provider, builds a v1 reference, proves a
+    tampered signature is rejected, submits the valid reference on-chain,
+    and verifies `arkiv_query` returns the exact reference bytes.
+- `.github/workflows/payload-reference-integration.yml`
+  - Builds `arkiv-node`, `arkiv-cli`, and `atlas-payload-provider`.
+  - Runs the smoke script in GitHub Actions against real local services.
 
 ## Verification
 
@@ -102,6 +114,8 @@ cargo test -p arkiv-node precompile
 cargo test -p arkiv-node --test payload_reference_precompile
 cargo test -p arkiv-node
 cargo test -p arkiv-entitydb
+bash -n scripts/payload-reference-dev-chain-smoke.sh
+scripts/payload-reference-dev-chain-smoke.sh
 ```
 
 Not completed locally:

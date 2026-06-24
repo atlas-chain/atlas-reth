@@ -369,6 +369,13 @@ Arkiv entity key, attributes, expiry, owner, chain ID, or precompile
 address. A later provider signing scheme must bind those fields before
 the chain can treat the receipt as full operation-intent proof.
 
+The production signer allowlist is consensus-defined in the
+precompile. Local development chain ID `1337` additionally trusts the
+deterministic signer derived from private key `0x...01`
+(`0x7e5f4552091a69125d5dfcb7b8c2659029395bdf`) so CI can run a
+local payload-provider service without access to production signing
+keys.
+
 Query and proof behavior remains byte-exact: `arkiv_query` returns the
 reference JSON as `value` when payload data is included, and
 `eth_getProof(entity_address)` commits to those exact reference bytes

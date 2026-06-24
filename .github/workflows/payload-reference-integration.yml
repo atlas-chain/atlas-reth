@@ -1,0 +1,83 @@
+name: Payload Reference Integration
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - release/**
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provider-dev-chain-smoke:
+    name: Provider + dev chain smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+
+    steps:
+      - name: Checkout atlas-reth
+        uses: actions/checkout@v6
+        with:
+          path: atlas-reth
+
+      - name: Checkout atlas-payload-provider
+        uses: actions/checkout@v6
+        with:
+          repository: atlas-chain/atlas-payload-provider
+          path: atlas-payload-provider
+          token: ${{ secrets.ATLAS_PAYLOAD_PROVIDER_TOKEN || github.token }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq mold
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: payload-reference-integration
+          workspaces: |
+            atlas-reth -> target
+            atlas-payload-provider -> target
+
+      - name: Build atlas-reth binaries
+        working-directory: atlas-reth
+        run: cargo build --bin arkiv-node --bin arkiv-cli
+
+      - name: Build payload provider
+        working-directory: atlas-payload-provider
+        run: cargo build --bin atlas-payload-provider
+
+      - name: Run payload-reference smoke
+        working-directory: atlas-reth
+        env:
+          PAYLOAD_PROVIDER_DIR: ${{ github.workspace }}/atlas-payload-provider
+          PAYLOAD_REFERENCE_SMOKE_DIR: ${{ runner.temp }}/payload-reference-smoke
+        run: scripts/payload-reference-dev-chain-smoke.sh
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: payload-reference-smoke-logs
+          path: ${{ runner.temp }}/payload-reference-smoke/*.log
+          if-no-files-found: ignore

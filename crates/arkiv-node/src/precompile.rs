@@ -160,10 +160,18 @@ const PAYLOAD_PROVIDER_SERVICE: &str = "atlas-payload-provider";
 const PAYLOAD_PROVIDER_RECEIPT_ACTION: &str = "payloadReceived";
 const MAX_PAYLOAD_PROVIDER_NAMESPACE_BYTES: usize = 64;
 const MAX_PAYLOAD_PROVIDER_CONTENT_TYPE_BYTES: usize = 128;
+const DEV_CHAIN_ID: u64 = 1337;
 
 const TRUSTED_PAYLOAD_PROVIDER_SIGNERS: [Address; 1] = [Address::new([
     0xbd, 0xd2, 0x3f, 0xd1, 0xba, 0xb3, 0xf4, 0x07, 0x5e, 0xde, 0xf4, 0x73, 0x8d, 0x1d, 0x78, 0xa6,
     0xbc, 0x5c, 0x23, 0x6c,
+])];
+
+// Dev-chain-only signer for local integration tests. Private key:
+// 0x0000000000000000000000000000000000000000000000000000000000000001.
+const TRUSTED_DEV_PAYLOAD_PROVIDER_SIGNERS: [Address; 1] = [Address::new([
+    0x7e, 0x5f, 0x45, 0x52, 0x09, 0x1a, 0x69, 0x12, 0x5d, 0x5d, 0xfc, 0xb7, 0xb8, 0xc2, 0x65, 0x90,
+    0x29, 0x39, 0x5b, 0xdf,
 ])];
 
 pub fn arkiv_precompile() -> DynPrecompile {
@@ -322,7 +330,7 @@ fn apply_op(
 ) -> Result<(), ApplyError> {
     match op.operationType {
         OP_CREATE => apply_create(input, caller, chain_id, current_block, op),
-        OP_UPDATE => apply_update(input, caller, current_block, op),
+        OP_UPDATE => apply_update(input, caller, chain_id, current_block, op),
         OP_EXTEND => apply_extend(input, caller, current_block, op),
         OP_TRANSFER => apply_transfer(input, caller, current_block, op),
         OP_DELETE => apply_delete(input, caller, current_block, op),
@@ -345,7 +353,7 @@ fn apply_create(
     }
     validate_attribute_names(&op.attributes)?;
     let content_type = mime128_to_bytes(&op.contentType);
-    validate_payload_reference_if_needed(&op.payload, &content_type)?;
+    validate_payload_reference_if_needed(&op.payload, &content_type, chain_id)?;
 
     let expires_at = current_block.saturating_add(op.btl as u64);
     let attributes = convert_attributes(&op.attributes)?;
@@ -373,12 +381,13 @@ fn apply_create(
 fn apply_update(
     input: &mut PrecompileInput<'_>,
     caller: Address,
+    chain_id: u64,
     current_block: u64,
     op: &Operation,
 ) -> Result<(), ApplyError> {
     validate_attribute_names(&op.attributes)?;
     let content_type = mime128_to_bytes(&op.contentType);
-    validate_payload_reference_if_needed(&op.payload, &content_type)?;
+    validate_payload_reference_if_needed(&op.payload, &content_type, chain_id)?;
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
     let attributes = convert_attributes(&op.attributes)?;
     {
@@ -656,14 +665,15 @@ struct PayloadReceiptJson {
 fn validate_payload_reference_if_needed(
     payload: &[u8],
     content_type: &[u8],
+    chain_id: u64,
 ) -> Result<(), ApplyError> {
     if content_type == PAYLOAD_REFERENCE_CONTENT_TYPE {
-        validate_payload_reference(payload)?;
+        validate_payload_reference(payload, chain_id)?;
     }
     Ok(())
 }
 
-fn validate_payload_reference(payload: &[u8]) -> Result<(), ApplyError> {
+fn validate_payload_reference(payload: &[u8], chain_id: u64) -> Result<(), ApplyError> {
     let reference: PayloadReferenceJson =
         serde_json::from_slice(payload).map_err(|_| payload_reference_malformed())?;
 
@@ -699,12 +709,13 @@ fn validate_payload_reference(payload: &[u8]) -> Result<(), ApplyError> {
         size_bytes: reference.size_bytes,
         submitted_at: reference.submitted_at,
     };
-    validate_payload_signature(&expected_receipt, &reference.signature)
+    validate_payload_signature(&expected_receipt, &reference.signature, chain_id)
 }
 
 fn validate_payload_signature(
     expected_receipt: &PayloadReceiptJson,
     signature: &PayloadSignatureJson,
+    chain_id: u64,
 ) -> Result<(), ApplyError> {
     if signature.scheme != "eip191" {
         return Err(payload_provider_signature_invalid());
@@ -742,7 +753,7 @@ fn validate_payload_signature(
     if recovered != declared_signer {
         return Err(payload_provider_signature_invalid());
     }
-    if !is_trusted_payload_provider_signer(declared_signer) {
+    if !is_trusted_payload_provider_signer(declared_signer, chain_id) {
         return Err(ApplyError::Revert(
             PayloadProviderSignerNotAllowed {
                 signer: declared_signer,
@@ -761,8 +772,9 @@ fn parse_payload_provider_signer(value: &str) -> Result<Address, ApplyError> {
         .map_err(|_| payload_provider_signature_invalid())
 }
 
-fn is_trusted_payload_provider_signer(signer: Address) -> bool {
+fn is_trusted_payload_provider_signer(signer: Address, chain_id: u64) -> bool {
     TRUSTED_PAYLOAD_PROVIDER_SIGNERS.contains(&signer)
+        || (chain_id == DEV_CHAIN_ID && TRUSTED_DEV_PAYLOAD_PROVIDER_SIGNERS.contains(&signer))
 }
 
 fn decode_prefixed_hex_32(value: &str) -> Result<[u8; 32], ApplyError> {
@@ -1254,14 +1266,14 @@ mod tests {
 
     #[test]
     fn payload_reference_fixture_verifies() {
-        validate_payload_reference(&payload_reference_fixture()).expect("valid fixture");
+        validate_payload_reference(&payload_reference_fixture(), 1).expect("valid fixture");
     }
 
     #[test]
     fn payload_reference_requires_supported_version() {
         let mut reference = payload_reference_value();
         reference["version"] = serde_json::json!(2);
-        let err = validate_payload_reference(reference.to_string().as_bytes()).unwrap_err();
+        let err = validate_payload_reference(reference.to_string().as_bytes(), 1).unwrap_err();
         let bytes = match err {
             ApplyError::Revert(b) => b,
             ApplyError::Fatal(_) => panic!("expected revert"),
@@ -1278,7 +1290,7 @@ mod tests {
         reference["checksum"] = serde_json::json!(
             "sha256:0000000000000000000000000000000000000000000000000000000000000000"
         );
-        let err = validate_payload_reference(reference.to_string().as_bytes()).unwrap_err();
+        let err = validate_payload_reference(reference.to_string().as_bytes(), 1).unwrap_err();
         let bytes = match err {
             ApplyError::Revert(b) => b,
             ApplyError::Fatal(_) => panic!("expected revert"),
@@ -1291,7 +1303,7 @@ mod tests {
         let mut reference = payload_reference_value();
         reference["signature"]["messageHash"] =
             serde_json::json!("0x0000000000000000000000000000000000000000000000000000000000000000");
-        let err = validate_payload_reference(reference.to_string().as_bytes()).unwrap_err();
+        let err = validate_payload_reference(reference.to_string().as_bytes(), 1).unwrap_err();
         let bytes = match err {
             ApplyError::Revert(b) => b,
             ApplyError::Fatal(_) => panic!("expected revert"),
@@ -1301,7 +1313,7 @@ mod tests {
 
     #[test]
     fn payload_reference_content_type_triggers_verification() {
-        let err = validate_payload_reference_if_needed(b"{}", PAYLOAD_REFERENCE_CONTENT_TYPE)
+        let err = validate_payload_reference_if_needed(b"{}", PAYLOAD_REFERENCE_CONTENT_TYPE, 1)
             .unwrap_err();
         let bytes = match err {
             ApplyError::Revert(b) => b,
@@ -1309,8 +1321,15 @@ mod tests {
         };
         assert_eq!(&bytes[..4], &PayloadReferenceMalformed::SELECTOR);
 
-        validate_payload_reference_if_needed(b"{}", b"application/json")
+        validate_payload_reference_if_needed(b"{}", b"application/json", 1)
             .expect("non-reference MIME keeps inline behavior");
+    }
+
+    #[test]
+    fn dev_payload_provider_signer_is_dev_chain_only() {
+        let dev_signer = TRUSTED_DEV_PAYLOAD_PROVIDER_SIGNERS[0];
+        assert!(is_trusted_payload_provider_signer(dev_signer, DEV_CHAIN_ID));
+        assert!(!is_trusted_payload_provider_signer(dev_signer, 1));
     }
 
     #[test]

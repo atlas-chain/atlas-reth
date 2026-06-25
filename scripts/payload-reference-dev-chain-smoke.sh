@@ -254,14 +254,27 @@ if [ -z "$entity_key" ]; then
     exit 1
 fi
 
-log "verifying query returns the exact reference bytes"
-expected_value="0x$(printf '%s' "$reference" | od -An -tx1 -v | tr -d ' \n')"
+log "verifying query returns a payload reference summary without raw bytes"
 query="$(jq -nc --arg q "\$key = ${entity_key}" --arg ct "$CONTENT_TYPE" \
     '{jsonrpc:"2.0",id:1,method:"arkiv_query",params:[$q,{includeData:{payload:true,contentType:true}}]}')"
 query_response="$(json_rpc "$query")"
-jq -e --arg expected "$expected_value" --arg ct "$CONTENT_TYPE" '
+jq -e \
+    --arg id "$(jq -r '.id' <<<"$reference")" \
+    --arg ns "$(jq -r '.namespace' <<<"$reference")" \
+    --arg ct "$(jq -r '.contentType' <<<"$reference")" \
+    --arg checksum "$(jq -r '.checksum' <<<"$reference")" \
+    --arg submitted_at "$(jq -r '.submittedAt' <<<"$reference")" \
+    --argjson size_bytes "$(jq -r '.sizeBytes' <<<"$reference")" '
     .result.data | length == 1
-    and .[0].value == $expected
+    and (.[0] | has("value") | not)
+    and (.[0] | has("payload") | not)
+    and .[0].payloadRef.id == $id
+    and .[0].payloadRef.namespace == $ns
+    and .[0].payloadRef.provider == "atlas-payload-provider"
+    and .[0].payloadRef.contentType == $ct
+    and .[0].payloadRef.checksum == $checksum
+    and .[0].payloadRef.sizeBytes == $size_bytes
+    and .[0].payloadRef.submittedAt == $submitted_at
     and .[0].contentType == $ct
 ' <<<"$query_response" >/dev/null
 

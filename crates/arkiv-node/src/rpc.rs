@@ -6,7 +6,7 @@
 
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, U256};
 use arkiv_entitydb::query::{Page, PageParams, execute};
 use arkiv_entitydb::{ATTR_ENTITY_KEY, ATTR_STRING, ATTR_UINT, EntityRlp, all_entities};
 use async_trait::async_trait;
@@ -70,6 +70,7 @@ pub struct QueryOptions {
 #[serde(rename_all = "camelCase")]
 pub struct IncludeData {
     pub key: Option<bool>,
+    pub payload_reference: Option<bool>,
     pub payload: Option<bool>,
     pub attributes: Option<bool>,
     pub content_type: Option<bool>,
@@ -102,7 +103,7 @@ pub struct QueryResponse {
 pub struct EntityData {
     pub key: B256,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<Bytes>,
+    pub payload_ref: Option<PayloadReferenceSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,6 +134,38 @@ pub struct EntityData {
     pub operation_index_in_transaction: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub attributes: Vec<Attribute>,
+}
+
+/// Lightweight pointer to provider-hosted payload bytes. The full
+/// signed reference remains in entity state; query responses expose
+/// only the fields clients need to fetch and verify the raw body from
+/// the payload provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PayloadReferenceSummary {
+    pub provider: String,
+    pub id: String,
+    pub namespace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    pub checksum: String,
+    pub size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredPayloadReference {
+    provider: String,
+    id: String,
+    namespace: String,
+    #[serde(default)]
+    content_type: Option<String>,
+    checksum: String,
+    size_bytes: u64,
+    #[serde(default)]
+    submitted_at: Option<String>,
 }
 
 /// Discriminated attribute on the wire. `value`'s encoding depends on
@@ -282,7 +315,7 @@ fn snapshot_for<P: StateProviderFactory>(
 /// included; `Some` → each unset field defaults to false.
 #[derive(Debug, Clone, Copy)]
 struct ResolvedIncludeData {
-    payload: bool,
+    payload_reference: bool,
     attributes: bool,
     content_type: bool,
     expiration: bool,
@@ -297,7 +330,7 @@ struct ResolvedIncludeData {
 impl ResolvedIncludeData {
     fn all() -> Self {
         Self {
-            payload: true,
+            payload_reference: true,
             attributes: true,
             content_type: true,
             expiration: true,
@@ -314,7 +347,7 @@ impl ResolvedIncludeData {
         match opt {
             None => Self::all(),
             Some(id) => Self {
-                payload: id.payload.unwrap_or(false),
+                payload_reference: id.payload_reference.or(id.payload).unwrap_or(false),
                 attributes: id.attributes.unwrap_or(false),
                 content_type: id.content_type.unwrap_or(false),
                 expiration: id.expiration.unwrap_or(false),
@@ -343,12 +376,19 @@ fn entity_data_from(e: EntityRlp, inc: &ResolvedIncludeData) -> EntityData {
         Vec::new()
     };
 
+    let content_type = String::from_utf8_lossy(&e.content_type).into_owned();
+    let payload_ref = if inc.payload_reference
+        && content_type == "application/vnd.atlas.payload-reference+json"
+    {
+        payload_reference_summary(&e.payload)
+    } else {
+        None
+    };
+
     EntityData {
         key: e.key,
-        value: inc.payload.then(|| Bytes::from(e.payload)),
-        content_type: inc
-            .content_type
-            .then(|| String::from_utf8_lossy(&e.content_type).into_owned()),
+        payload_ref,
+        content_type: inc.content_type.then_some(content_type),
         expires_at: inc.expiration.then_some(e.expires_at),
         owner: inc.owner.then_some(e.owner),
         creator: inc.creator.then_some(e.creator),
@@ -361,6 +401,19 @@ fn entity_data_from(e: EntityRlp, inc: &ResolvedIncludeData) -> EntityData {
         operation_index_in_transaction: inc.operation_index_in_transaction.then_some(0),
         attributes,
     }
+}
+
+fn payload_reference_summary(payload: &[u8]) -> Option<PayloadReferenceSummary> {
+    let reference: StoredPayloadReference = serde_json::from_slice(payload).ok()?;
+    Some(PayloadReferenceSummary {
+        provider: reference.provider,
+        id: reference.id,
+        namespace: reference.namespace,
+        content_type: reference.content_type,
+        checksum: reference.checksum,
+        size_bytes: reference.size_bytes,
+        submitted_at: reference.submitted_at,
+    })
 }
 
 fn format_attribute_value(value_type: u8, bytes: &[u8]) -> String {

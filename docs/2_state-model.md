@@ -134,10 +134,11 @@ The user-facing entry point and the EVM-side adapter to
   (entity exists / caller is owner / not expired / etc.). Failures
   return Solidity-style reverts using the standard error selectors
   (`Ident32Empty`, `NotOwner`, `EntityNotFound`, ...) so SDK error
-  decoders resolve them. For `Create` / `Update`, if
-  `Operation.contentType` is exactly
-  `application/vnd.atlas.payload-reference+json`, `Operation.payload`
-  must be v1 Atlas payload-provider reference JSON. The precompile
+  decoders resolve them. For `Create` / `Update`,
+  `Operation.contentType` must be exactly
+  `application/vnd.atlas.payload-reference+json`, and
+  `Operation.payload` must be v1 Atlas payload-provider reference
+  JSON. Inline create/update payload bytes are rejected. The precompile
   parses that JSON, reconstructs the provider receipt, verifies the
   EIP-191 signature, recovers the signer, and checks the recovered
   signer against the consensus allowlist. It never calls the provider
@@ -322,10 +323,7 @@ address can recover the complete key.
 
 #### Inline and reference payloads
 
-For ordinary entities, `payload` is the raw inline byte payload and
-`content_type` is the MIME type supplied by the caller.
-
-For detached payloads, the caller uses the reserved content type
+Create and update operations use detached payloads. The caller uses the reserved content type
 `application/vnd.atlas.payload-reference+json`. In that mode,
 `payload` is the exact JSON reference bytes accepted by the
 precompile, not the original off-chain payload bytes. The v1 reference
@@ -383,10 +381,12 @@ deterministic signer derived from private key `0x...01`
 local payload-provider service without access to production signing
 keys.
 
-Query and proof behavior remains byte-exact: `arkiv_query` returns the
-reference JSON as `value` when payload data is included, and
-`eth_getProof(entity_address)` commits to those exact reference bytes
-through the entity account `codeHash`.
+Proof behavior remains byte-exact: `eth_getProof(entity_address)`
+commits to those exact reference bytes through the entity account
+`codeHash`. `arkiv_query` does not return raw payload bytes or full
+reference JSON; it returns a lightweight `payloadRef` summary when
+requested so clients can fetch payload bytes from the provider and
+verify the checksum locally.
 
 ### System Account
 

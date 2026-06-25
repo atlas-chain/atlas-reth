@@ -179,9 +179,10 @@ verify keccak256(0xFE || rlp_bytes) == codeHash
 If the entity's `$contentType` is
 `application/vnd.atlas.payload-reference+json`, the RLP `payload`
 field is the verified Atlas payload-provider reference JSON. Query
-proofs authenticate those reference bytes exactly; resolving and
-verifying the original off-chain payload body is a client/provider
-step layered on top of the trie proof.
+responses do not return that payload field or raw off-chain payload
+bytes. They return a lightweight `payloadRef` summary when requested;
+resolving and verifying the original off-chain payload body is a
+client/provider step layered on top of the trie proof.
 
 For an **equality query result** (per-term):
 

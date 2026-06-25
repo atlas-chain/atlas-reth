@@ -132,6 +132,10 @@ library Entity {
 
     /// @dev The signed payload-reference payment amount is invalid.
     error PayloadReferencePaymentInvalid(uint256 payment);
+
+    /// @dev Create/update operations must use the payload-reference
+    /// content type. Inline payload bytes are no longer accepted.
+    error PayloadReferenceRequired(bytes contentType);
 }
 
 /// @title IEntityRegistry

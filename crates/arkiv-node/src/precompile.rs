@@ -113,6 +113,7 @@ sol! {
     error PayloadReferenceContentTypeInvalid(bytes contentType);
     error PayloadReferenceNonceUsed(bytes32 nonce);
     error PayloadReferencePaymentInvalid(uint256 payment);
+    error PayloadReferenceRequired(bytes contentType);
 }
 
 // Op-type tags. Must match `Entity.{CREATE..EXPIRE}` in
@@ -356,10 +357,9 @@ fn apply_create(
     }
     validate_attribute_names(&op.attributes)?;
     let content_type = mime128_to_bytes(&op.contentType);
-    validate_payload_reference_if_needed(input, caller, &op.payload, &content_type, chain_id)?;
-
     let expires_at = current_block.saturating_add(op.btl as u64);
     let attributes = convert_attributes(&op.attributes)?;
+    validate_required_payload_reference(input, caller, &op.payload, &content_type, chain_id)?;
     let entity_key = {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         let current_nonce = arkiv_entitydb::bump_nonce(&mut adapter, caller)
@@ -390,9 +390,9 @@ fn apply_update(
 ) -> Result<(), ApplyError> {
     validate_attribute_names(&op.attributes)?;
     let content_type = mime128_to_bytes(&op.contentType);
-    validate_payload_reference_if_needed(input, caller, &op.payload, &content_type, chain_id)?;
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
     let attributes = convert_attributes(&op.attributes)?;
+    validate_required_payload_reference(input, caller, &op.payload, &content_type, chain_id)?;
     {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::update(
@@ -693,6 +693,25 @@ fn validate_payload_reference_if_needed(
             .map_err(|e| ApplyError::Fatal(format!("consume payload reference nonce: {e}")))?;
     }
     Ok(())
+}
+
+fn validate_required_payload_reference(
+    input: &mut PrecompileInput<'_>,
+    caller: Address,
+    payload: &[u8],
+    content_type: &[u8],
+    chain_id: u64,
+) -> Result<(), ApplyError> {
+    if content_type != PAYLOAD_REFERENCE_CONTENT_TYPE {
+        return Err(ApplyError::Revert(
+            PayloadReferenceRequired {
+                contentType: Bytes::copy_from_slice(content_type),
+            }
+            .abi_encode()
+            .into(),
+        ));
+    }
+    validate_payload_reference_if_needed(input, caller, payload, content_type, chain_id)
 }
 
 #[derive(Debug, Clone, Copy)]

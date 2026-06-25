@@ -228,10 +228,12 @@ async fn full_pipeline() -> eyre::Result<()> {
     let new_tag = world.query(r#"tag = "podcast""#).await?;
     assert_eq!(new_tag.len(), 1);
     assert_eq!(new_tag[0].key, alice_key);
-    assert_eq!(
-        new_tag[0].value.as_ref().map(|b| b.as_ref()),
-        Some(b"alice v2".as_slice()),
-    );
+    let payload_ref = new_tag[0]
+        .payload_ref
+        .as_ref()
+        .expect("query returns payload reference, not raw payload bytes");
+    assert_eq!(payload_ref.content_type.as_deref(), Some("text/plain"));
+    assert_eq!(payload_ref.size_bytes, b"alice v2".len() as u64);
 
     // Old score=42 bitmap should be empty for alice.
     assert!(world.query("score = 42").await?.is_empty());

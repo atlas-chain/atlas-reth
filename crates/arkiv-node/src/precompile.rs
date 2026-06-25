@@ -359,7 +359,8 @@ fn apply_create(
     let content_type = mime128_to_bytes(&op.contentType);
     let expires_at = current_block.saturating_add(op.btl as u64);
     let attributes = convert_attributes(&op.attributes)?;
-    validate_required_payload_reference(input, caller, &op.payload, &content_type, chain_id)?;
+    let stored_content_type =
+        validate_required_payload_reference(input, caller, &op.payload, &content_type, chain_id)?;
     let entity_key = {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         let current_nonce = arkiv_entitydb::bump_nonce(&mut adapter, caller)
@@ -372,7 +373,7 @@ fn apply_create(
             expires_at,
             current_block,
             op.payload.to_vec(),
-            content_type,
+            stored_content_type,
             attributes,
         )?;
         entity_key
@@ -392,7 +393,8 @@ fn apply_update(
     let content_type = mime128_to_bytes(&op.contentType);
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
     let attributes = convert_attributes(&op.attributes)?;
-    validate_required_payload_reference(input, caller, &op.payload, &content_type, chain_id)?;
+    let stored_content_type =
+        validate_required_payload_reference(input, caller, &op.payload, &content_type, chain_id)?;
     {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::update(
@@ -400,7 +402,7 @@ fn apply_update(
             op.entityKey,
             current_block,
             op.payload.to_vec(),
-            content_type,
+            stored_content_type,
             attributes,
         )?;
     }
@@ -676,9 +678,10 @@ fn validate_payload_reference_if_needed(
     payload: &[u8],
     content_type: &[u8],
     chain_id: u64,
-) -> Result<(), ApplyError> {
+) -> Result<Option<Vec<u8>>, ApplyError> {
     if content_type == PAYLOAD_REFERENCE_CONTENT_TYPE {
         let auth = validate_payload_reference(payload, chain_id)?;
+        let stored_content_type = auth.content_type;
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         if arkiv_entitydb::payload_reference_nonce_used(&mut adapter, caller, auth.nonce)
             .map_err(|e| ApplyError::Fatal(format!("read payload reference nonce: {e}")))?
@@ -691,8 +694,9 @@ fn validate_payload_reference_if_needed(
         }
         arkiv_entitydb::consume_payload_reference_nonce(&mut adapter, caller, auth.nonce)
             .map_err(|e| ApplyError::Fatal(format!("consume payload reference nonce: {e}")))?;
+        return Ok(Some(stored_content_type));
     }
-    Ok(())
+    Ok(None)
 }
 
 fn validate_required_payload_reference(
@@ -701,7 +705,7 @@ fn validate_required_payload_reference(
     payload: &[u8],
     content_type: &[u8],
     chain_id: u64,
-) -> Result<(), ApplyError> {
+) -> Result<Vec<u8>, ApplyError> {
     if content_type != PAYLOAD_REFERENCE_CONTENT_TYPE {
         return Err(ApplyError::Revert(
             PayloadReferenceRequired {
@@ -711,12 +715,14 @@ fn validate_required_payload_reference(
             .into(),
         ));
     }
-    validate_payload_reference_if_needed(input, caller, payload, content_type, chain_id)
+    validate_payload_reference_if_needed(input, caller, payload, content_type, chain_id)?
+        .ok_or_else(payload_reference_malformed)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PayloadReferenceAuth {
     nonce: B256,
+    content_type: Vec<u8>,
 }
 
 fn validate_payload_reference(
@@ -745,6 +751,12 @@ fn validate_payload_reference(
     validate_payload_id(&reference.id)?;
     validate_payload_namespace(&reference.namespace)?;
     validate_payload_content_type(reference.content_type.as_deref())?;
+    let content_type = reference
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .as_bytes()
+        .to_vec();
     validate_payload_checksum(&reference.checksum)?;
     validate_payload_size(reference.size_bytes)?;
     validate_submitted_at(&reference.submitted_at)?;
@@ -763,7 +775,10 @@ fn validate_payload_reference(
         payment: reference.payment,
     };
     validate_payload_signature(&expected_receipt, &reference.signature, chain_id)?;
-    Ok(PayloadReferenceAuth { nonce })
+    Ok(PayloadReferenceAuth {
+        nonce,
+        content_type,
+    })
 }
 
 fn validate_payload_signature(

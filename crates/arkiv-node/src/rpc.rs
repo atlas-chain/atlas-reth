@@ -377,9 +377,7 @@ fn entity_data_from(e: EntityRlp, inc: &ResolvedIncludeData) -> EntityData {
     };
 
     let content_type = String::from_utf8_lossy(&e.content_type).into_owned();
-    let payload_ref = if inc.payload_reference
-        && content_type == "application/vnd.atlas.payload-reference+json"
-    {
+    let payload_ref = if inc.payload_reference {
         payload_reference_summary(&e.payload)
     } else {
         None

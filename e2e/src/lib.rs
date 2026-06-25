@@ -27,9 +27,12 @@ use std::time::Duration;
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256, keccak256};
+use alloy_primitives::{
+    Address, B256, Bytes, FixedBytes, TxKind, U256, eip191_hash_message, hex, keccak256,
+};
 use alloy_rpc_types_engine::PayloadAttributes;
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
+use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, sol};
 use arkiv_genesis::{ARKIV_ADDRESS, dev_signers};
@@ -48,6 +51,8 @@ use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
 use reth_node_ethereum::{EthereumAddOns, EthereumNode};
 use reth_provider::BlockReader;
 use reth_rpc_eth_api::helpers::{EthApiSpec, EthTransactions, TraceExt};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 // ── Contract ABI (mirror of EntityRegistry.execute) ──────────────────
 
@@ -85,6 +90,62 @@ pub const ATTR_UINT: u8 = 1;
 pub const ATTR_STRING: u8 = 2;
 pub const ATTR_ENTITY_KEY: u8 = 3;
 
+pub const PAYLOAD_REFERENCE_CONTENT_TYPE: &str = "application/vnd.atlas.payload-reference+json";
+const PAYLOAD_PROVIDER_SERVICE: &str = "atlas-payload-provider";
+const PAYLOAD_PROVIDER_RECEIPT_ACTION: &str = "payloadReceived";
+const PAYLOAD_PROVIDER_NAMESPACE: &str = "arkiv.e2e";
+const PAYLOAD_REFERENCE_PAYMENT: u64 = 100_000;
+const PAYLOAD_REFERENCE_SUBMITTED_AT: &str = "2026-06-24T00:00:00Z";
+const DEV_PAYLOAD_PROVIDER_PRIVATE_KEY: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000001";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PayloadReferenceJson {
+    kind: &'static str,
+    version: u64,
+    provider: &'static str,
+    id: String,
+    namespace: &'static str,
+    content_type: String,
+    checksum: String,
+    size_bytes: u64,
+    submitted_at: &'static str,
+    nonce: String,
+    payment: u64,
+    signature: PayloadSignatureJson,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PayloadSignatureJson {
+    scheme: &'static str,
+    signer: Address,
+    receipt: PayloadReceiptJson,
+    #[serde(rename = "messageHash")]
+    message_hash: String,
+    signature: String,
+    r: String,
+    s: String,
+    v: u8,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct PayloadReceiptJson {
+    service: &'static str,
+    action: &'static str,
+    #[serde(rename = "payloadId")]
+    payload_id: String,
+    namespace: &'static str,
+    checksum: String,
+    #[serde(rename = "sizeBytes")]
+    size_bytes: u64,
+    #[serde(rename = "submittedAt")]
+    submitted_at: &'static str,
+    nonce: String,
+    payment: u64,
+}
+
 // ── Op builders ──────────────────────────────────────────────────────
 
 /// Builder for a CREATE op submitted via [`World::create`].
@@ -101,6 +162,7 @@ pub struct CreateOp {
 impl CreateOp {
     pub fn new() -> Self {
         Self {
+            payload: b"arkiv e2e payload".to_vec(),
             btl: 1_000,
             ..Self::default()
         }
@@ -309,11 +371,19 @@ where
         let key = compute_entity_key(self.chain_id, ARKIV_ADDRESS, sender, entity_nonce);
 
         let attrs = build_attributes(&op.string_attrs, &op.numeric_attrs, &op.entity_key_attrs);
+        let payload = signed_payload_reference(
+            sender,
+            key,
+            OP_CREATE,
+            self.eth_nonces[signer_idx],
+            &op.payload,
+            &op.content_type,
+        )?;
         let abi_op = Operation {
             operationType: OP_CREATE,
             entityKey: B256::ZERO, // contract derives it; this field is ignored on CREATE
-            payload: Bytes::from(op.payload),
-            contentType: pack_mime(&op.content_type),
+            payload: Bytes::from(payload),
+            contentType: pack_mime(PAYLOAD_REFERENCE_CONTENT_TYPE),
             attributes: attrs,
             btl: op.btl,
             newOwner: Address::ZERO,
@@ -324,12 +394,21 @@ where
     }
 
     async fn update(&mut self, signer_idx: usize, key: B256, op: UpdateOp) -> Result<()> {
+        let sender = self.address(signer_idx);
         let attrs = build_attributes(&op.string_attrs, &op.numeric_attrs, &[]);
+        let payload = signed_payload_reference(
+            sender,
+            key,
+            OP_UPDATE,
+            self.eth_nonces[signer_idx],
+            &op.payload,
+            &op.content_type,
+        )?;
         let abi_op = Operation {
             operationType: OP_UPDATE,
             entityKey: key,
-            payload: Bytes::from(op.payload),
-            contentType: pack_mime(&op.content_type),
+            payload: Bytes::from(payload),
+            contentType: pack_mime(PAYLOAD_REFERENCE_CONTENT_TYPE),
             attributes: attrs,
             btl: 0,
             newOwner: Address::ZERO,
@@ -608,6 +687,92 @@ fn compute_entity_key(chain_id: u64, arkiv_addr: Address, sender: Address, nonce
     buf.extend_from_slice(sender.as_slice());
     buf.extend_from_slice(&nonce.to_be_bytes());
     keccak256(&buf)
+}
+
+fn signed_payload_reference(
+    caller: Address,
+    entity_key: B256,
+    op_type: u8,
+    tx_nonce: u64,
+    payload: &[u8],
+    content_type: &str,
+) -> Result<Vec<u8>> {
+    let content_type = if content_type.is_empty() {
+        "application/octet-stream"
+    } else {
+        content_type
+    };
+    let payload_id = provider_payload_id(PAYLOAD_PROVIDER_NAMESPACE, payload);
+    let checksum = payload_checksum(payload);
+    let nonce = payload_reference_nonce(caller, entity_key, op_type, tx_nonce);
+    let receipt = PayloadReceiptJson {
+        service: PAYLOAD_PROVIDER_SERVICE,
+        action: PAYLOAD_PROVIDER_RECEIPT_ACTION,
+        payload_id: payload_id.clone(),
+        namespace: PAYLOAD_PROVIDER_NAMESPACE,
+        checksum: checksum.clone(),
+        size_bytes: payload.len() as u64,
+        submitted_at: PAYLOAD_REFERENCE_SUBMITTED_AT,
+        nonce,
+        payment: PAYLOAD_REFERENCE_PAYMENT,
+    };
+    let receipt_json = serde_json::to_vec(&receipt)?;
+    let message_hash = eip191_hash_message(&receipt_json);
+    let signer: PrivateKeySigner = DEV_PAYLOAD_PROVIDER_PRIVATE_KEY.parse()?;
+    let signature = signer.sign_message_sync(&receipt_json)?;
+    let signature_json = PayloadSignatureJson {
+        scheme: "eip191",
+        signer: signer.address(),
+        receipt,
+        message_hash: hex::encode_prefixed(message_hash.as_slice()),
+        signature: hex::encode_prefixed(signature.as_bytes()),
+        r: hex::encode_prefixed(signature.r().to_be_bytes::<32>()),
+        s: hex::encode_prefixed(signature.s().to_be_bytes::<32>()),
+        v: 27 + signature.v() as u8,
+    };
+    let reference = PayloadReferenceJson {
+        kind: "atlas.payloadReference",
+        version: 1,
+        provider: PAYLOAD_PROVIDER_SERVICE,
+        id: payload_id,
+        namespace: PAYLOAD_PROVIDER_NAMESPACE,
+        content_type: content_type.to_string(),
+        checksum,
+        size_bytes: payload.len() as u64,
+        submitted_at: PAYLOAD_REFERENCE_SUBMITTED_AT,
+        nonce: signature_json.receipt.nonce.clone(),
+        payment: PAYLOAD_REFERENCE_PAYMENT,
+        signature: signature_json,
+    };
+    Ok(serde_json::to_vec(&reference)?)
+}
+
+fn provider_payload_id(namespace: &str, payload: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(namespace.as_bytes());
+    hasher.update([0]);
+    hasher.update(payload);
+    hex::encode(hasher.finalize())
+}
+
+fn payload_checksum(payload: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn payload_reference_nonce(
+    caller: Address,
+    entity_key: B256,
+    op_type: u8,
+    tx_nonce: u64,
+) -> String {
+    let mut buf = Vec::with_capacity(20 + 32 + 1 + 8);
+    buf.extend_from_slice(caller.as_slice());
+    buf.extend_from_slice(entity_key.as_slice());
+    buf.push(op_type);
+    buf.extend_from_slice(&tx_nonce.to_be_bytes());
+    hex::encode_prefixed(keccak256(&buf))
 }
 
 // ── Payload attrs ────────────────────────────────────────────────────

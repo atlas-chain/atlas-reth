@@ -40,10 +40,12 @@ alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-eips.workspace = true
 alloy-sol-types.workspace = true
+alloy-signer = "=2.1.0"
 alloy-signer-local.workspace = true
 
 jsonrpsee = { workspace = true, features = ["http-client", "client"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 eyre.workspace = true

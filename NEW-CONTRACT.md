@@ -1,34 +1,34 @@
 # New Contract / Precompile Requirements
 
-This document captures the requirements the Arkiv contract surface must meet
-when we move from today's inline payload model to payload-provider-backed entity
-payloads.
+This document captures the requirements the Arkiv contract surface must meet for
+payload-provider-backed entity payloads.
 
 In this repo, "contract" means the ABI in
 `contracts/src/EntityRegistry.sol` plus the Rust precompile implementation at
 `ARKIV_ADDRESS`. There is no deployed Solidity bytecode. Any ABI change must keep
 the Solidity interface and the precompile `sol!`/decoder definitions in lockstep.
 
-## Current SDK Version: No Contract Change Required
+## Current SDK / Precompile Version: Reference Required
 
-The first SDK integration is a dual-write flow:
+Create/update writes are reference-only:
 
 1. SDK receives `createEntity`, `updateEntity`, or `mutateEntities` input.
 2. SDK uploads every create/update payload to the Atlas Payload Provider.
 3. Provider stores the bytes and returns payload metadata plus an EIP-191 receipt
    signature.
 4. SDK verifies the provider metadata/signature.
-5. SDK sends the existing `execute(Operation[])` transaction to Arkiv RPC with
-   the original full payload bytes inline.
+5. SDK sends the existing `execute(Operation[])` transaction to Arkiv RPC with a
+   signed payload reference in `Operation.payload`.
 6. SDK returns normal transaction data plus optional provider receipt data.
 
-The current precompile can remain unchanged for that version. The chain still
-stores and serves inline payload bytes exactly as it does today.
+The precompile rejects inline create/update payloads. Query RPC does not return
+raw payload bytes; it returns a lightweight `payloadRef` summary that clients can
+resolve through the payload provider.
 
-## Future Contract Goal
+## Contract Goal
 
-Later, create/update operations should be able to store a compact detached
-payload reference instead of the full payload bytes.
+Create/update operations store a compact detached payload reference instead of
+the full payload bytes.
 
 ```text
 Original payload bytes
@@ -191,14 +191,14 @@ contract change.
 
 ## State And Query Semantics
 
-The precompile must support both inline and reference-backed entities.
+The precompile supports reference-backed create/update operations.
 
 Requirements:
 
-- Existing inline entities remain valid and readable.
-- A create may create either inline or reference-backed content.
-- An update may transition inline -> reference, reference -> inline, or
-  reference -> reference.
+- Create/update operations require reference-backed content.
+- Existing inline development-state entities may remain in historical state, but
+  query RPC must not return raw inline payload bytes.
+- An update may transition legacy inline content to reference-backed content.
 - Owner, creator, expiration, attributes, entity key derivation, nonce handling,
   and authorization semantics remain unchanged.
 - The entity state committed in the state root must include the exact stored
@@ -206,11 +206,9 @@ Requirements:
 - `eth_getProof` + `eth_getCode` must still prove the entity record that Arkiv
   stores. For reference-backed entities, the proof authenticates the reference,
   not the raw off-chain payload bytes.
-- `arkiv_query` must expose enough information for SDKs to resolve detached
-  payloads from a provider.
-- Query/RPC must not pretend a reference is the raw payload. Either return the
-  reference payload as stored, or add an explicit response shape/metadata flag
-  that tells clients the payload is detached.
+- `arkiv_query` must expose enough lightweight `payloadRef` information for SDKs
+  to resolve detached payloads from a provider.
+- Query/RPC must not return raw payload bytes or the full signed reference JSON.
 
 SDKs can then fetch `GET /payloads/{id}/raw` from the provider and verify the
 checksum client-side.
@@ -289,28 +287,16 @@ message, or the provider signing scheme must be versioned explicitly.
 
 ## Activation / Compatibility
 
-Do not flip SDKs to reference mode until the chain exposes a reliable capability
-signal. Options:
-
-- Chain id plus known activation block.
-- RPC capability method.
-- Contract/precompile version method.
-- SDK chain config flag.
-
-Before activation, SDKs must keep `transactionPayload: "inline"` behavior.
-
-After activation, SDKs may support:
+SDKs require payload-provider configuration for create/update operations:
 
 ```ts
 payloadProvider: {
   url: "https://payload.atlas.arkiv-global.net",
-  bearerKey: "...",
-  transactionPayload: "reference"
+  bearerKey: "..."
 }
 ```
 
-The chain must continue accepting inline payloads unless a later migration
-explicitly disables them.
+Inline transaction mode is removed from the SDK.
 
 ## Test Checklist
 
@@ -318,8 +304,8 @@ Precompile / entitydb tests:
 
 - Valid reference create stores the canonical reference.
 - Valid reference update replaces previous content.
-- Inline create/update behavior remains unchanged.
-- Inline -> reference and reference -> inline transitions work.
+- Inline create/update reverts with `PayloadReferenceRequired`.
+- Legacy inline -> reference update works when the caller owns the legacy entity.
 - Malformed reference reverts before state changes.
 - Unsupported reference version reverts.
 - Unknown provider reverts.

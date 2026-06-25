@@ -1,15 +1,15 @@
 # Payload Reference Implementation Summary
 
-This branch implements first-pass contract/precompile support for
+This branch implements reference-only contract/precompile support for
 Atlas payload-provider references.
 
 ## What changed
 
-- `Entity.Operation.payload` can now carry v1 payload-reference JSON
+- `Entity.Operation.payload` carries v1 payload-reference JSON
   when `Entity.Operation.contentType` is exactly
   `application/vnd.atlas.payload-reference+json`.
-- Normal inline payloads are unchanged. If any other content type is
-  used, the precompile stores `payload` bytes exactly as before.
+- CREATE and UPDATE reject non-reference content types with
+  `PayloadReferenceRequired`.
 - Reference-backed CREATE and UPDATE operations are validated before
   nonce bumps or entity state writes.
 - The precompile verifies the provider receipt with no network calls:
@@ -100,8 +100,9 @@ the chain treats the receipt as a complete authorization proof.
   - Documented inline/reference payload semantics, JSON shape, v1 proof
     limitation, and gas model.
 - `docs/3_query.md`
-  - Documented that query/proof results authenticate reference JSON
-    bytes, not the original off-chain payload body.
+  - Documented that query responses expose lightweight `payloadRef`
+    summaries, while proofs authenticate reference JSON bytes, not the
+    original off-chain payload body.
 - `scripts/payload-reference-dev-chain-smoke.sh`
   - Starts a local signed payload provider and Arkiv dev chain.
   - Submits a payload to the provider, builds a v1 reference, proves a

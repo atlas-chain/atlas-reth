@@ -1,5 +1,6 @@
 use alloy_eips::eip1559::{
-    ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS, ArkivProtocolParams, ArkivProtocolScheduleEntry,
+    ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS, ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR,
+    ArkivPayloadProviderPaymentParams, ArkivProtocolParams, ArkivProtocolScheduleEntry,
     install_arkiv_protocol_schedule,
 };
 use eyre::{Context, Result, bail};
@@ -187,6 +188,11 @@ impl RemoteProtocolSchedule {
                 elasticity_multiplier: 2,
                 base_fee_max_change_denominator: 8,
                 max_block_gas_limit: U64String(30_000_000),
+                payload_provider_payment: RemotePayloadProviderPaymentParams {
+                    enabled: false,
+                    provider_share_bps: 0,
+                    minimum_payment: U64String(0),
+                },
             }],
         }
     }
@@ -229,6 +235,7 @@ struct RemoteProtocolScheduleEntry {
     elasticity_multiplier: u128,
     base_fee_max_change_denominator: u128,
     max_block_gas_limit: U64String,
+    payload_provider_payment: RemotePayloadProviderPaymentParams,
 }
 
 impl RemoteProtocolScheduleEntry {
@@ -242,6 +249,7 @@ impl RemoteProtocolScheduleEntry {
         if self.max_block_gas_limit.0 < 5_000 {
             bail!("maxBlockGasLimit is below the minimum viable gas limit");
         }
+        self.payload_provider_payment.validate()?;
         Ok(())
     }
 
@@ -253,7 +261,36 @@ impl RemoteProtocolScheduleEntry {
                 elasticity_multiplier: self.elasticity_multiplier,
                 base_fee_max_change_denominator: self.base_fee_max_change_denominator,
                 max_block_gas_limit: self.max_block_gas_limit.0,
+                payload_provider_payment: self.payload_provider_payment.to_alloy(),
             },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePayloadProviderPaymentParams {
+    enabled: bool,
+    provider_share_bps: u16,
+    minimum_payment: U64String,
+}
+
+impl RemotePayloadProviderPaymentParams {
+    fn validate(&self) -> Result<()> {
+        if self.provider_share_bps > ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR {
+            bail!("payloadProviderPayment.providerShareBps must be <= 10000");
+        }
+        if self.enabled && self.minimum_payment.0 == 0 {
+            bail!("payloadProviderPayment.minimumPayment must be greater than 0 when enabled");
+        }
+        Ok(())
+    }
+
+    fn to_alloy(self) -> ArkivPayloadProviderPaymentParams {
+        ArkivPayloadProviderPaymentParams {
+            enabled: self.enabled,
+            provider_share_bps: self.provider_share_bps,
+            minimum_payment: self.minimum_payment.0,
         }
     }
 }
@@ -318,14 +355,24 @@ mod tests {
                         "minBaseFeePerGas": "440000000",
                         "elasticityMultiplier": 2,
                         "baseFeeMaxChangeDenominator": 8,
-                        "maxBlockGasLimit": "30000000"
+                        "maxBlockGasLimit": "30000000",
+                        "payloadProviderPayment": {
+                            "enabled": true,
+                            "providerShareBps": 7000,
+                            "minimumPayment": "100000"
+                        }
                     },
                     {
                         "activationBlock": 120,
                         "minBaseFeePerGas": "800000000",
                         "elasticityMultiplier": 4,
                         "baseFeeMaxChangeDenominator": 8,
-                        "maxBlockGasLimit": "60000000"
+                        "maxBlockGasLimit": "60000000",
+                        "payloadProviderPayment": {
+                            "enabled": true,
+                            "providerShareBps": 8000,
+                            "minimumPayment": "200000"
+                        }
                     }
                 ]
             }"#,
@@ -335,6 +382,14 @@ mod tests {
         let entries = selected_entries(&schedule);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].params.min_base_fee_per_gas, 440_000_000);
+        assert!(entries[0].params.payload_provider_payment.enabled);
+        assert_eq!(
+            entries[0]
+                .params
+                .payload_provider_payment
+                .provider_share_bps,
+            7000
+        );
     }
 
     #[test]
@@ -350,5 +405,6 @@ mod tests {
             parsed.schedule[0].min_base_fee_per_gas.0,
             ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS
         );
+        assert!(!parsed.schedule[0].payload_provider_payment.enabled);
     }
 }

@@ -70,7 +70,7 @@ Atlas payload-provider references.
 ## Important limitation
 
 The current provider receipt signs payload metadata plus a
-caller-scoped one-time nonce and a simple gas payment amount. It proves a
+caller-scoped one-time nonce and a scheduled payment amount. It proves a
 trusted provider accepted bytes identified by payload ID, checksum,
 namespace, size, timestamp, nonce, and payment. It does not yet bind
 the signature to Arkiv operation intent such as entity key,
@@ -89,7 +89,7 @@ the chain treats the receipt as a complete authorization proof.
   - Added v1 reference parsing and validation.
   - Added EIP-191 receipt verification and signer recovery.
   - Added trusted signer allowlist, nonce replay protection, and
-    signed payment gas surcharge.
+    scheduled payload-provider payment accounting.
   - Added unit tests for valid fixture, version mismatch, receipt
     mismatch, signature tampering, nonce/payment validation, and gas
     accounting.

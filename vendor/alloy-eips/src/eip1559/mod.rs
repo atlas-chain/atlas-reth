@@ -10,8 +10,9 @@ mod arkiv_schedule;
 #[cfg(feature = "std")]
 pub use arkiv_schedule::{
     arkiv_protocol_params_for_block, arkiv_protocol_params_latest, arkiv_protocol_schedule,
-    install_arkiv_protocol_schedule, ArkivProtocolParams, ArkivProtocolScheduleEntry,
-    ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS,
+    install_arkiv_protocol_schedule, ArkivPayloadProviderPaymentParams, ArkivProtocolParams,
+    ArkivProtocolScheduleEntry, ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS,
+    ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR,
 };
 
 mod constants;

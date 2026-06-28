@@ -366,9 +366,13 @@ shape is:
 ```
 
 The precompile verifies the provider's signed payload metadata,
-caller-scoped one-time nonce, and simple gas payment amount in v1. It
-stores consumed nonces in the Arkiv system account so the same signed
-reference cannot be replayed by the same caller. It does not prove
+caller-scoped one-time nonce, and signed payment amount in v1. When
+the active protocol schedule enables `payloadProviderPayment`, that
+payment is debited from the caller: `providerShareBps` is transferred
+to the recovered trusted provider signer, and the remainder is burned
+by reducing the caller balance. It stores consumed nonces in the Arkiv
+system account so the same signed reference cannot be replayed by the
+same caller. It does not prove
 that the provider signature is bound to the Arkiv entity key,
 attributes, expiry, owner, chain ID, or precompile address. A later
 provider signing scheme must bind those fields before the chain can
@@ -678,11 +682,12 @@ Gas is charged as a pure function of operation inputs, with no
 dependency on any pre-existing state. The precompile computes per-op
 cost from calldata only and charges it via standard revm precompile
 gas accounting (`PrecompileOutput::new` for success,
-`halt(OutOfGas)` for budget exhaustion).
+`halt(OutOfGas)` for budget exhaustion). Payload-reference `payment`
+is not gas; it is a scheduled balance side effect.
 
 | Op | Base | Per-byte | Per-annotation | Per indexed user attr | Payload reference |
 |---|---|---|---|---|---|
-| `Create` | `G_CREATE` | `G_BYTE = 16` × `(payload_bytes + annotation_bytes)` | `G_ANNOTATION = 5_000` | `G_ART_INDEXED_ANNOTATION = 6_000` | `G_PAYLOAD_REFERENCE_VERIFY = 50_000` + signed `payment` gas when content type is reserved |
+| `Create` | `G_CREATE` | `G_BYTE = 16` × `(payload_bytes + annotation_bytes)` | `G_ANNOTATION = 5_000` | `G_ART_INDEXED_ANNOTATION = 6_000` | `G_PAYLOAD_REFERENCE_VERIFY = 50_000` when content type is reserved |
 | `Update` | `G_UPDATE` | same | same | same | same |
 | `Extend` | `G_EXTEND` | — | — | — | — |
 | `Transfer` | `G_TRANSFER` | — | — | — | — |

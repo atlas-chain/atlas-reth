@@ -5,6 +5,20 @@ use std::sync::{OnceLock, RwLock};
 /// Default Arkiv testnet base-fee floor: 0.44 gwei.
 pub const ARKIV_DEFAULT_MIN_BASE_FEE_PER_GAS: u64 = 440_000_000;
 
+/// Basis-point denominator for payload-provider payment splits.
+pub const ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR: u16 = 10_000;
+
+/// Runtime payload-provider payment knobs supplied by Arkiv's schedule poller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArkivPayloadProviderPaymentParams {
+    /// Whether signed payload-reference payments are applied as balance side effects.
+    pub enabled: bool,
+    /// Share of the signed payment transferred to the recovered provider signer.
+    pub provider_share_bps: u16,
+    /// Minimum signed payment accepted by the precompile.
+    pub minimum_payment: u64,
+}
+
 /// Runtime protocol knobs supplied by Arkiv's experimental schedule poller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArkivProtocolParams {
@@ -16,6 +30,8 @@ pub struct ArkivProtocolParams {
     pub base_fee_max_change_denominator: u128,
     /// Desired payload-builder gas-limit cap.
     pub max_block_gas_limit: u64,
+    /// Payload-provider payment split parameters.
+    pub payload_provider_payment: ArkivPayloadProviderPaymentParams,
 }
 
 impl Default for ArkivProtocolParams {
@@ -26,6 +42,7 @@ impl Default for ArkivProtocolParams {
             elasticity_multiplier: base_fee_params.elasticity_multiplier,
             base_fee_max_change_denominator: base_fee_params.max_change_denominator,
             max_block_gas_limit: u64::MAX,
+            payload_provider_payment: ArkivPayloadProviderPaymentParams::default(),
         }
     }
 }

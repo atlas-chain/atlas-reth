@@ -97,7 +97,12 @@ The document is a JSON object:
       "minBaseFeePerGas": "440000000",
       "elasticityMultiplier": 2,
       "baseFeeMaxChangeDenominator": 8,
-      "maxBlockGasLimit": "30000000"
+      "maxBlockGasLimit": "30000000",
+      "payloadProviderPayment": {
+        "enabled": false,
+        "providerShareBps": 0,
+        "minimumPayment": "0"
+      }
     }
   ]
 }
@@ -121,6 +126,15 @@ Schedule entry fields:
 | `elasticityMultiplier` | integer | yes | EIP-1559 elasticity multiplier. Must be greater than zero. |
 | `baseFeeMaxChangeDenominator` | integer | yes | EIP-1559 max-change denominator. Must be greater than zero. |
 | `maxBlockGasLimit` | string | yes | Payload-builder gas-limit cap. Decimal or `0x` hex string. |
+| `payloadProviderPayment` | object | yes | Native-token side effect applied to signed payload-reference create/update operations. |
+
+`payloadProviderPayment` fields:
+
+| Field | Type | Required | Meaning |
+|---|---:|---:|---|
+| `enabled` | boolean | yes | Enables caller debit, provider payout, and burn for signed payload-reference payments. |
+| `providerShareBps` | integer | yes | Basis points of `payment` transferred to the recovered trusted provider signer. The remainder is burned. |
+| `minimumPayment` | string | yes | Minimum accepted signed payment. Decimal or `0x` hex string. |
 
 Validation rules enforced by current `arkiv-node`:
 
@@ -130,8 +144,11 @@ Validation rules enforced by current `arkiv-node`:
 - `elasticityMultiplier` must be greater than `0`.
 - `baseFeeMaxChangeDenominator` must be greater than `0`.
 - `maxBlockGasLimit` must be at least `5000`.
-- Decimal and `0x`-prefixed hex strings are accepted for the two
-  string-encoded gas quantity fields.
+- `payloadProviderPayment.providerShareBps` must be `<= 10000`.
+- `payloadProviderPayment.minimumPayment` must be greater than `0`
+  when `payloadProviderPayment.enabled` is true.
+- Decimal and `0x`-prefixed hex strings are accepted for
+  string-encoded quantity fields.
 
 Operational validation the service should enforce before publishing:
 
@@ -350,4 +367,3 @@ Future schema changes should be additive:
 - Continue serving the current schema until all deployed nodes are
   upgraded.
 - Use a new endpoint path only for breaking changes.
-

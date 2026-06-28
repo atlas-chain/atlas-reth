@@ -26,6 +26,10 @@
 //!    so the SDK's `eth_getLogs` filter on that address resolves
 //!    every event.
 
+use alloy_eips::eip1559::{
+    ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR, ArkivPayloadProviderPaymentParams,
+    arkiv_protocol_params_for_block,
+};
 use alloy_evm::precompiles::{DynPrecompile, PrecompileInput};
 use alloy_primitives::{
     Address, B256, Bytes, FixedBytes, Log, Signature, U256, eip191_hash_message, hex, keccak256,
@@ -113,6 +117,9 @@ sol! {
     error PayloadReferenceContentTypeInvalid(bytes contentType);
     error PayloadReferenceNonceUsed(bytes32 nonce);
     error PayloadReferencePaymentInvalid(uint256 payment);
+    error PayloadReferencePaymentBelowMinimum(uint256 payment, uint256 minimum);
+    error PayloadReferencePaymentInsufficientBalance(address payer, uint256 payment, uint256 balance);
+    error PayloadProviderPaymentTransferFailed(address provider, uint256 amount);
     error PayloadReferenceRequired(bytes contentType);
 }
 
@@ -153,7 +160,6 @@ const G_ART_INDEXED_ANNOTATION: u64 = 6_000;
 // reference-backed CREATE / UPDATE payloads. The branch is selected
 // from calldata content type, never state or network I/O.
 const G_PAYLOAD_REFERENCE_VERIFY: u64 = 50_000;
-const G_PAYLOAD_REFERENCE_DEFAULT_PAYMENT: u64 = 100_000;
 
 const PRECOMPILE_NAME: &str = "ARKIV";
 
@@ -265,6 +271,7 @@ fn dispatch_execute(body: &[u8], input: &mut PrecompileInput<'_>) -> PrecompileR
         return Ok(revert(EmptyBatch {}.abi_encode().into(), input.reservoir));
     }
 
+    let current_block: u64 = input.internals.block_number().saturating_to();
     let gas_used = total_gas(&ops);
     if gas_used > input.gas {
         return Ok(PrecompileOutput::halt(
@@ -273,7 +280,6 @@ fn dispatch_execute(body: &[u8], input: &mut PrecompileInput<'_>) -> PrecompileR
         ));
     }
 
-    let current_block: u64 = input.internals.block_number().saturating_to();
     let caller = input.caller;
     let chain_id: u64 = input.internals.chain_id();
 
@@ -359,8 +365,9 @@ fn apply_create(
     let content_type = mime128_to_bytes(&op.contentType);
     let expires_at = current_block.saturating_add(op.btl as u64);
     let attributes = convert_attributes(&op.attributes)?;
-    let stored_content_type =
+    let payload_reference =
         validate_required_payload_reference(input, caller, &op.payload, &content_type, chain_id)?;
+    apply_payload_provider_payment(input, caller, current_block, &payload_reference)?;
     let entity_key = {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         let current_nonce = arkiv_entitydb::bump_nonce(&mut adapter, caller)
@@ -373,7 +380,7 @@ fn apply_create(
             expires_at,
             current_block,
             op.payload.to_vec(),
-            stored_content_type,
+            payload_reference.content_type,
             attributes,
         )?;
         entity_key
@@ -393,8 +400,9 @@ fn apply_update(
     let content_type = mime128_to_bytes(&op.contentType);
     let entity = load_entity_for_owner(input, caller, current_block, op.entityKey, false)?;
     let attributes = convert_attributes(&op.attributes)?;
-    let stored_content_type =
+    let payload_reference =
         validate_required_payload_reference(input, caller, &op.payload, &content_type, chain_id)?;
+    apply_payload_provider_payment(input, caller, current_block, &payload_reference)?;
     {
         let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
         arkiv_entitydb::update(
@@ -402,7 +410,7 @@ fn apply_update(
             op.entityKey,
             current_block,
             op.payload.to_vec(),
-            stored_content_type,
+            payload_reference.content_type,
             attributes,
         )?;
     }
@@ -672,40 +680,13 @@ struct PayloadReceiptJson {
     payment: u64,
 }
 
-fn validate_payload_reference_if_needed(
-    input: &mut PrecompileInput<'_>,
-    caller: Address,
-    payload: &[u8],
-    content_type: &[u8],
-    chain_id: u64,
-) -> Result<Option<Vec<u8>>, ApplyError> {
-    if content_type == PAYLOAD_REFERENCE_CONTENT_TYPE {
-        let auth = validate_payload_reference(payload, chain_id)?;
-        let stored_content_type = auth.content_type;
-        let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
-        if arkiv_entitydb::payload_reference_nonce_used(&mut adapter, caller, auth.nonce)
-            .map_err(|e| ApplyError::Fatal(format!("read payload reference nonce: {e}")))?
-        {
-            return Err(ApplyError::Revert(
-                PayloadReferenceNonceUsed { nonce: auth.nonce }
-                    .abi_encode()
-                    .into(),
-            ));
-        }
-        arkiv_entitydb::consume_payload_reference_nonce(&mut adapter, caller, auth.nonce)
-            .map_err(|e| ApplyError::Fatal(format!("consume payload reference nonce: {e}")))?;
-        return Ok(Some(stored_content_type));
-    }
-    Ok(None)
-}
-
 fn validate_required_payload_reference(
     input: &mut PrecompileInput<'_>,
     caller: Address,
     payload: &[u8],
     content_type: &[u8],
     chain_id: u64,
-) -> Result<Vec<u8>, ApplyError> {
+) -> Result<PayloadReferenceAuth, ApplyError> {
     if content_type != PAYLOAD_REFERENCE_CONTENT_TYPE {
         return Err(ApplyError::Revert(
             PayloadReferenceRequired {
@@ -715,14 +696,28 @@ fn validate_required_payload_reference(
             .into(),
         ));
     }
-    validate_payload_reference_if_needed(input, caller, payload, content_type, chain_id)?
-        .ok_or_else(payload_reference_malformed)
+    let auth = validate_payload_reference(payload, chain_id)?;
+    let mut adapter = ReadWriteStateAdapter::new(&mut input.internals);
+    if arkiv_entitydb::payload_reference_nonce_used(&mut adapter, caller, auth.nonce)
+        .map_err(|e| ApplyError::Fatal(format!("read payload reference nonce: {e}")))?
+    {
+        return Err(ApplyError::Revert(
+            PayloadReferenceNonceUsed { nonce: auth.nonce }
+                .abi_encode()
+                .into(),
+        ));
+    }
+    arkiv_entitydb::consume_payload_reference_nonce(&mut adapter, caller, auth.nonce)
+        .map_err(|e| ApplyError::Fatal(format!("consume payload reference nonce: {e}")))?;
+    Ok(auth)
 }
 
 #[derive(Debug, Clone)]
 struct PayloadReferenceAuth {
     nonce: B256,
     content_type: Vec<u8>,
+    payment: u64,
+    provider: Address,
 }
 
 fn validate_payload_reference(
@@ -774,10 +769,12 @@ fn validate_payload_reference(
         nonce: reference.nonce,
         payment: reference.payment,
     };
-    validate_payload_signature(&expected_receipt, &reference.signature, chain_id)?;
+    let provider = validate_payload_signature(&expected_receipt, &reference.signature, chain_id)?;
     Ok(PayloadReferenceAuth {
         nonce,
         content_type,
+        payment: reference.payment,
+        provider,
     })
 }
 
@@ -785,7 +782,7 @@ fn validate_payload_signature(
     expected_receipt: &PayloadReceiptJson,
     signature: &PayloadSignatureJson,
     chain_id: u64,
-) -> Result<(), ApplyError> {
+) -> Result<Address, ApplyError> {
     if signature.scheme != "eip191" {
         return Err(payload_provider_signature_invalid());
     }
@@ -832,7 +829,7 @@ fn validate_payload_signature(
         ));
     }
 
-    Ok(())
+    Ok(declared_signer)
 }
 
 fn parse_payload_provider_signer(value: &str) -> Result<Address, ApplyError> {
@@ -932,6 +929,117 @@ fn validate_payload_reference_payment(payment: u64) -> Result<(), ApplyError> {
             .abi_encode()
             .into(),
         ));
+    }
+    Ok(())
+}
+
+fn apply_payload_provider_payment(
+    input: &mut PrecompileInput<'_>,
+    caller: Address,
+    current_block: u64,
+    auth: &PayloadReferenceAuth,
+) -> Result<(), ApplyError> {
+    let params = arkiv_protocol_params_for_block(current_block).payload_provider_payment;
+    if !params.enabled {
+        return Ok(());
+    }
+
+    validate_payload_provider_payment_params(params)?;
+
+    if auth.payment < params.minimum_payment {
+        return Err(ApplyError::Revert(
+            PayloadReferencePaymentBelowMinimum {
+                payment: U256::from(auth.payment),
+                minimum: U256::from(params.minimum_payment),
+            }
+            .abi_encode()
+            .into(),
+        ));
+    }
+
+    let payment = U256::from(auth.payment);
+    let balance = input
+        .internals
+        .load_account(caller)
+        .map_err(|e| ApplyError::Fatal(format!("load caller account for payload payment: {e}")))?
+        .data
+        .info
+        .balance;
+    if balance < payment {
+        return Err(ApplyError::Revert(
+            PayloadReferencePaymentInsufficientBalance {
+                payer: caller,
+                payment,
+                balance,
+            }
+            .abi_encode()
+            .into(),
+        ));
+    }
+
+    let provider_amount = U256::from(
+        (auth.payment as u128 * params.provider_share_bps as u128)
+            / ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR as u128,
+    );
+    let burn_amount = payment.saturating_sub(provider_amount);
+
+    if provider_amount > U256::ZERO {
+        let failed = input
+            .internals
+            .transfer(caller, auth.provider, provider_amount)
+            .map_err(|e| ApplyError::Fatal(format!("transfer payload provider payment: {e}")))?;
+        if failed.is_some() {
+            return Err(ApplyError::Revert(
+                PayloadProviderPaymentTransferFailed {
+                    provider: auth.provider,
+                    amount: provider_amount,
+                }
+                .abi_encode()
+                .into(),
+            ));
+        }
+    }
+
+    if burn_amount > U256::ZERO {
+        let post_transfer_balance = input
+            .internals
+            .load_account(caller)
+            .map_err(|e| {
+                ApplyError::Fatal(format!("load caller account for payload payment burn: {e}"))
+            })?
+            .data
+            .info
+            .balance;
+        let new_balance = post_transfer_balance
+            .checked_sub(burn_amount)
+            .ok_or_else(|| {
+                ApplyError::Revert(
+                    PayloadReferencePaymentInsufficientBalance {
+                        payer: caller,
+                        payment,
+                        balance: post_transfer_balance,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+            })?;
+        input
+            .internals
+            .set_balance(caller, new_balance)
+            .map_err(|e| ApplyError::Fatal(format!("burn payload reference payment: {e}")))?;
+    }
+
+    Ok(())
+}
+
+fn validate_payload_provider_payment_params(
+    params: ArkivPayloadProviderPaymentParams,
+) -> Result<(), ApplyError> {
+    if params.provider_share_bps > ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR {
+        return Err(ApplyError::Fatal(format!(
+            "payload provider payment share {} exceeds {}",
+            params.provider_share_bps, ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR
+        )));
     }
     Ok(())
 }
@@ -1134,7 +1242,7 @@ fn op_gas(op: &Operation) -> u64 {
         .count() as u64;
 
     let reference_verify = if mime128_to_bytes(&op.contentType) == PAYLOAD_REFERENCE_CONTENT_TYPE {
-        G_PAYLOAD_REFERENCE_VERIFY.saturating_add(payload_reference_payment_gas(&op.payload))
+        G_PAYLOAD_REFERENCE_VERIFY
     } else {
         0
     };
@@ -1144,19 +1252,6 @@ fn op_gas(op: &Operation) -> u64 {
         .saturating_add(annotation_count.saturating_mul(G_ANNOTATION))
         .saturating_add(indexed_count.saturating_mul(G_ART_INDEXED_ANNOTATION))
         .saturating_add(reference_verify)
-}
-
-fn payload_reference_payment_gas(payload: &[u8]) -> u64 {
-    #[derive(Deserialize)]
-    struct PaymentProbe {
-        payment: Option<u64>,
-    }
-
-    serde_json::from_slice::<PaymentProbe>(payload)
-        .ok()
-        .and_then(|probe| probe.payment)
-        .filter(|payment| *payment > 0)
-        .unwrap_or(G_PAYLOAD_REFERENCE_DEFAULT_PAYMENT)
 }
 
 // ─── Encoding helpers ────────────────────────────────────────────────
@@ -1825,24 +1920,7 @@ mod tests {
         };
         assert_eq!(
             op_gas(&op),
-            G_CREATE
-                + (payload.len() as u64 * G_BYTE)
-                + G_PAYLOAD_REFERENCE_VERIFY
-                + G_PAYLOAD_REFERENCE_DEFAULT_PAYMENT
-        );
-    }
-
-    #[test]
-    fn payload_reference_payment_gas_reads_signed_payment_field() {
-        let mut reference = payload_reference_value();
-        reference["payment"] = serde_json::json!(123_456);
-        assert_eq!(
-            payload_reference_payment_gas(reference.to_string().as_bytes()),
-            123_456
-        );
-        assert_eq!(
-            payload_reference_payment_gas(b"{}"),
-            G_PAYLOAD_REFERENCE_DEFAULT_PAYMENT
+            G_CREATE + (payload.len() as u64 * G_BYTE) + G_PAYLOAD_REFERENCE_VERIFY
         );
     }
 }

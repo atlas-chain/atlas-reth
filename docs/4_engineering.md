@@ -216,14 +216,24 @@ Schema:
       "minBaseFeePerGas": "440000000",
       "elasticityMultiplier": 2,
       "baseFeeMaxChangeDenominator": 8,
-      "maxBlockGasLimit": "30000000"
+      "maxBlockGasLimit": "30000000",
+      "payloadProviderPayment": {
+        "enabled": false,
+        "providerShareBps": 0,
+        "minimumPayment": "0"
+      }
     },
     {
       "activationBlock": 120,
       "minBaseFeePerGas": "800000000",
       "elasticityMultiplier": 4,
       "baseFeeMaxChangeDenominator": 8,
-      "maxBlockGasLimit": "60000000"
+      "maxBlockGasLimit": "60000000",
+      "payloadProviderPayment": {
+        "enabled": true,
+        "providerShareBps": 7000,
+        "minimumPayment": "100000"
+      }
     }
   ]
 }
@@ -242,6 +252,10 @@ hardfork mechanism. The base-fee floor, elasticity multiplier, and
 base-fee max-change denominator affect consensus header validation.
 The `maxBlockGasLimit` value caps payload-builder gas-limit selection;
 the upstream parent/child gas-limit delta validation still applies.
+When `payloadProviderPayment.enabled` is true, signed payload-reference
+create/update operations debit the caller by the signed `payment`, pay
+`providerShareBps` to the recovered trusted provider signer, and burn
+the remainder.
 The HTTP service contract for publishing this JSON is specified in
 [`6_protocol-schedule-service.md`](6_protocol-schedule-service.md).
 

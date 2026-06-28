@@ -133,6 +133,21 @@ library Entity {
     /// @dev The signed payload-reference payment amount is invalid.
     error PayloadReferencePaymentInvalid(uint256 payment);
 
+    /// @dev The signed payload-reference payment is below the active
+    /// protocol-schedule minimum.
+    error PayloadReferencePaymentBelowMinimum(uint256 payment, uint256 minimum);
+
+    /// @dev The caller cannot cover the signed payload-reference
+    /// payment side effect.
+    error PayloadReferencePaymentInsufficientBalance(
+        address payer,
+        uint256 payment,
+        uint256 balance
+    );
+
+    /// @dev The provider payout leg failed.
+    error PayloadProviderPaymentTransferFailed(address provider, uint256 amount);
+
     /// @dev Create/update operations must use the payload-reference
     /// content type. Inline payload bytes are no longer accepted.
     error PayloadReferenceRequired(bytes contentType);

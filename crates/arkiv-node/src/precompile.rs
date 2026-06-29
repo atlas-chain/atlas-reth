@@ -39,6 +39,7 @@ use arkiv_entitydb::{
     ARKIV_ADDRESS, ATTR_ENTITY_KEY, ATTR_STRING, ATTR_UINT, Attribute as EntityAttribute,
     StateAdapter,
 };
+use revm::context_interface::block::Block;
 use revm::precompile::{
     PrecompileError, PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult,
 };
@@ -628,7 +629,7 @@ fn validate_attribute_names(attrs: &[Attribute]) -> Result<(), ApplyError> {
 ///
 /// The signed receipt proves that a trusted provider accepted payload
 /// bytes identified by `(namespace, payloadId, checksum, sizeBytes)`
-/// for a caller-scoped one-time nonce and a simple gas payment amount.
+/// for a caller-scoped one-time nonce and provider payment gas units.
 /// It deliberately does not prove the rest of the Arkiv operation
 /// intent; see `NEW-CONTRACT.md` for the next signing-scheme step.
 #[derive(Debug, Deserialize)]
@@ -957,7 +958,8 @@ fn apply_payload_provider_payment(
         ));
     }
 
-    let payment = U256::from(auth.payment);
+    let base_fee_per_gas = input.internals.block_env().basefee();
+    let payment = U256::from(auth.payment as u128 * base_fee_per_gas as u128);
     let balance = input
         .internals
         .load_account(caller)
@@ -977,10 +979,8 @@ fn apply_payload_provider_payment(
         ));
     }
 
-    let provider_amount = U256::from(
-        (auth.payment as u128 * params.provider_share_bps as u128)
-            / ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR as u128,
-    );
+    let provider_amount = (payment * U256::from(params.provider_share_bps))
+        / U256::from(ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR);
     let burn_amount = payment.saturating_sub(provider_amount);
 
     if provider_amount > U256::ZERO {

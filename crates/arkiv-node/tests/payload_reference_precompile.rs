@@ -2,16 +2,23 @@
 
 mod common;
 
+use alloy_eips::eip1559::{
+    ArkivPayloadProviderPaymentParams, ArkivProtocolParams, ArkivProtocolScheduleEntry,
+    install_arkiv_protocol_schedule,
+};
 use alloy_evm::Evm;
-use alloy_primitives::{Address, B256, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256, address};
 use alloy_sol_types::{SolCall, SolError, sol};
-use arkiv_genesis::ARKIV_ADDRESS;
+use arkiv_genesis::{ARKIV_ADDRESS, arkiv_dev_balance_wei, dev_signers};
 use eyre::Result;
 use revm::DatabaseCommit;
 use revm::context::TxEnv;
 use revm::context::result::ResultAndState;
 
-use common::{Operation, boot_direct_evm_with_chain_id, executeCall, pack_mime};
+use common::{
+    Operation, boot_direct_evm_with_chain_id, boot_direct_evm_with_chain_id_and_base_fee,
+    executeCall, pack_mime,
+};
 
 const OP_CREATE: u8 = 1;
 const PAYLOAD_REFERENCE_CONTENT_TYPE: &str = "application/vnd.atlas.payload-reference+json";
@@ -81,6 +88,49 @@ fn execute_rejects_replayed_payload_reference_nonce() -> Result<()> {
     );
     let output = result.output().expect("revert output");
     assert_eq!(&output[..4], &PayloadReferenceNonceUsed::SELECTOR);
+    Ok(())
+}
+
+#[test]
+fn execute_payload_reference_payment_uses_signed_gas_units_times_base_fee() -> Result<()> {
+    install_arkiv_protocol_schedule(vec![ArkivProtocolScheduleEntry {
+        activation_block: 0,
+        params: ArkivProtocolParams {
+            payload_provider_payment: ArkivPayloadProviderPaymentParams {
+                enabled: true,
+                provider_share_bps: 7000,
+                minimum_payment: 1,
+            },
+            ..Default::default()
+        },
+    }]);
+
+    let base_fee_per_gas = 440_000_000u64;
+    let (mut evm, _) = boot_direct_evm_with_chain_id_and_base_fee(1337, base_fee_per_gas)?;
+    let sender = dev_signers(2)?[1].address();
+    let provider = address!("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
+    let calldata = executeCall {
+        ops: vec![reference_create_op(valid_payload_reference())],
+    }
+    .abi_encode();
+
+    let mut tx = call_tx(sender, calldata, 0);
+    tx.gas_price = base_fee_per_gas as u128;
+    let ResultAndState { result, state } = evm.transact(tx)?;
+
+    install_arkiv_protocol_schedule(Vec::new());
+    assert!(result.is_success(), "reference CREATE reverted: {result:?}");
+    let payment = U256::from(100_000u64 * base_fee_per_gas);
+    let provider_amount = payment * U256::from(7000u64) / U256::from(10_000u64);
+    let transaction_fee = U256::from(result.tx_gas_used() * base_fee_per_gas);
+    let sender_balance = state.get(&sender).expect("sender state").info.balance;
+    let provider_balance = state.get(&provider).expect("provider state").info.balance;
+
+    assert_eq!(provider_balance, provider_amount);
+    assert_eq!(
+        sender_balance,
+        arkiv_dev_balance_wei() - payment - transaction_fee
+    );
     Ok(())
 }
 

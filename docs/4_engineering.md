@@ -253,8 +253,9 @@ base-fee max-change denominator affect consensus header validation.
 The `maxBlockGasLimit` value caps payload-builder gas-limit selection;
 the upstream parent/child gas-limit delta validation still applies.
 When `payloadProviderPayment.enabled` is true, signed payload-reference
-create/update operations debit the caller by the signed `payment`, pay
-`providerShareBps` to the recovered trusted provider signer, and burn
+create/update operations treat signed `payment` as provider payment gas
+units, multiply it by the block base fee, pay `providerShareBps` of the
+resulting wei amount to the recovered trusted provider signer, and burn
 the remainder.
 The HTTP service contract for publishing this JSON is specified in
 [`6_protocol-schedule-service.md`](6_protocol-schedule-service.md).

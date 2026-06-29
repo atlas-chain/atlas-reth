@@ -13,9 +13,9 @@ pub const ARKIV_PAYLOAD_PROVIDER_PAYMENT_BPS_DENOMINATOR: u16 = 10_000;
 pub struct ArkivPayloadProviderPaymentParams {
     /// Whether signed payload-reference payments are applied as balance side effects.
     pub enabled: bool,
-    /// Share of the signed payment transferred to the recovered provider signer.
+    /// Share of the signed payment gas converted to wei and transferred to the recovered provider signer.
     pub provider_share_bps: u16,
-    /// Minimum signed payment accepted by the precompile.
+    /// Minimum signed payment gas units accepted by the precompile.
     pub minimum_payment: u64,
 }
 

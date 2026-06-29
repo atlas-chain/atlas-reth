@@ -366,11 +366,12 @@ shape is:
 ```
 
 The precompile verifies the provider's signed payload metadata,
-caller-scoped one-time nonce, and signed payment amount in v1. When
-the active protocol schedule enables `payloadProviderPayment`, that
-payment is debited from the caller: `providerShareBps` is transferred
-to the recovered trusted provider signer, and the remainder is burned
-by reducing the caller balance. It stores consumed nonces in the Arkiv
+caller-scoped one-time nonce, and signed payment gas units in v1. When
+the active protocol schedule enables `payloadProviderPayment`, those
+units are multiplied by the block base fee, `providerShareBps` of the
+resulting wei amount is transferred to the recovered trusted provider
+signer, and the remainder is burned by reducing the caller balance. It
+stores consumed nonces in the Arkiv
 system account so the same signed reference cannot be replayed by the
 same caller. It does not prove
 that the provider signature is bound to the Arkiv entity key,
@@ -683,7 +684,8 @@ dependency on any pre-existing state. The precompile computes per-op
 cost from calldata only and charges it via standard revm precompile
 gas accounting (`PrecompileOutput::new` for success,
 `halt(OutOfGas)` for budget exhaustion). Payload-reference `payment`
-is not gas; it is a scheduled balance side effect.
+is provider payment gas units; it is converted to wei with the block
+base fee and applied as a scheduled balance side effect.
 
 | Op | Base | Per-byte | Per-annotation | Per indexed user attr | Payload reference |
 |---|---|---|---|---|---|

@@ -133,8 +133,8 @@ Schedule entry fields:
 | Field | Type | Required | Meaning |
 |---|---:|---:|---|
 | `enabled` | boolean | yes | Enables caller debit, provider payout, and burn for signed payload-reference payments. |
-| `providerShareBps` | integer | yes | Basis points of `payment` transferred to the recovered trusted provider signer. The remainder is burned. |
-| `minimumPayment` | string | yes | Minimum accepted signed payment. Decimal or `0x` hex string. |
+| `providerShareBps` | integer | yes | Basis points of `payment * blockBaseFeePerGas` transferred to the recovered trusted provider signer. The remainder is burned. |
+| `minimumPayment` | string | yes | Minimum accepted signed payment gas units. Decimal or `0x` hex string. |
 
 Validation rules enforced by current `arkiv-node`:
 

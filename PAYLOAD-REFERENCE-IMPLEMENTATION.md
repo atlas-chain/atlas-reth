@@ -70,7 +70,7 @@ Atlas payload-provider references.
 ## Important limitation
 
 The current provider receipt signs payload metadata plus a
-caller-scoped one-time nonce and a scheduled payment amount. It proves a
+caller-scoped one-time nonce and provider payment gas units. It proves a
 trusted provider accepted bytes identified by payload ID, checksum,
 namespace, size, timestamp, nonce, and payment. It does not yet bind
 the signature to Arkiv operation intent such as entity key,

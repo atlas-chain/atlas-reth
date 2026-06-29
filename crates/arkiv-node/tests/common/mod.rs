@@ -63,6 +63,13 @@ pub fn boot_direct_evm() -> Result<(DirectEvm, Address)> {
 }
 
 pub fn boot_direct_evm_with_chain_id(chain_id: u64) -> Result<(DirectEvm, Address)> {
+    boot_direct_evm_with_chain_id_and_base_fee(chain_id, 0)
+}
+
+pub fn boot_direct_evm_with_chain_id_and_base_fee(
+    chain_id: u64,
+    base_fee_per_gas: u64,
+) -> Result<(DirectEvm, Address)> {
     // DB seeded from production genesis_alloc: 100 prefunded dev
     // signers. The system account is materialised lazily on the first
     // op, so nothing else needs seeding here.
@@ -85,8 +92,9 @@ pub fn boot_direct_evm_with_chain_id(chain_id: u64) -> Result<(DirectEvm, Addres
     }
 
     let factory = ArkivEthEvmFactory::new();
-    let mut env = EvmEnv::default(); // SpecId default with cfg.chain_id = 1
+    let mut env: EvmEnv = EvmEnv::default(); // SpecId default with cfg.chain_id = 1
     env.cfg_env.chain_id = chain_id;
+    env.block_env.basefee = base_fee_per_gas;
     let evm = factory.create_evm(db, env);
 
     let sender = dev_signers(1)?[0].address();

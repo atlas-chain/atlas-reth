@@ -130,7 +130,7 @@ library Entity {
     /// nonce.
     error PayloadReferenceNonceUsed(bytes32 nonce);
 
-    /// @dev The signed payload-reference payment amount is invalid.
+    /// @dev The signed payload-reference payment gas units value is invalid.
     error PayloadReferencePaymentInvalid(uint256 payment);
 
     /// @dev The signed payload-reference payment is below the active
